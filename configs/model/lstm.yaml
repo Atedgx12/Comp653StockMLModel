@@ -1,0 +1,14 @@
+name: lstm
+family: lstm
+task: sequence_regression
+requires_torch: true
+params:
+  input_window: 64
+  hidden_size: 128
+  num_layers: 2
+  dropout: 0.2
+  learning_rate: 1e-3
+  weight_decay: 1e-5
+  batch_size: 256
+  epochs: 30
+  early_stopping_patience: 5

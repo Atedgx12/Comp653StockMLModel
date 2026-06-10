@@ -1,0 +1,16 @@
+name: transformer
+family: transformer
+task: sequence_regression
+requires_torch: true
+params:
+  input_window: 64
+  patch_len: 8
+  d_model: 128
+  num_heads: 4
+  num_layers: 3
+  dropout: 0.1
+  learning_rate: 5e-4
+  weight_decay: 1e-4
+  batch_size: 256
+  epochs: 40
+  early_stopping_patience: 6

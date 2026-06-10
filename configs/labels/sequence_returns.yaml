@@ -1,0 +1,5 @@
+name: sequence_returns
+task: sequence_regression
+target: log_return
+input_window: 64
+forecast_horizon: 5

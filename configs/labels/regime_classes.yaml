@@ -1,0 +1,6 @@
+name: regime_classes
+task: classification
+target: regime_label
+horizon: 5
+direction_thresholds: [-0.005, 0.005]
+volatility_buckets: [0.15, 0.30]

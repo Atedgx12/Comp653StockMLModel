@@ -1,0 +1,21 @@
+name: equities_kaggle
+source: kaggle_huge_stock_market
+raw_root: data/raw/Stocks
+universe:
+  mode: top_n_by_volume
+  n: 200
+  min_history_days: 1500
+date_range:
+  start: "2005-01-01"
+  end: "2024-12-31"
+columns:
+  required: [Open, High, Low, Close, Volume]
+  optional: [OpenInt]
+preprocessing:
+  use_adjusted_close: true
+  drop_zero_volume_rows: true
+  forward_fill_limit: 1
+  outlier:
+    method: winsorize_returns
+    quantile_low: 0.001
+    quantile_high: 0.999

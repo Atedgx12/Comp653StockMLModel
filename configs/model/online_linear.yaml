@@ -1,0 +1,8 @@
+name: online_linear
+family: online_linear
+task: regression
+params:
+  alpha: 1.0
+  refit_every_days: 21
+  rolling_window_years: 3
+  use_regime_features: true

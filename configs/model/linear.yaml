@@ -1,0 +1,8 @@
+name: linear
+family: linear
+task: regression
+params:
+  alpha: 1.0
+  l1_ratio: 0.0
+  fit_intercept: true
+  max_iter: 5000

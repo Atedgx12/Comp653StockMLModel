@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stockml"
+version = "0.1.0"
+description = "Generalized cross-asset prediction model for COMP 653 Statistical Machine Learning"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Zachary Powell", email = "zp21@rice.edu" }]
+
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "scipy>=1.13",
+    "scikit-learn>=1.5",
+    "lightgbm>=4.3",
+    "yfinance>=0.2.40",
+    "matplotlib>=3.8",
+    "tqdm>=4.66",
+    "PyYAML>=6.0",
+    "joblib>=1.4",
+]
+
+[project.optional-dependencies]
+torch = [
+    "torch>=2.3",
+]
+dev = [
+    "pytest>=8.2",
+    "pytest-cov>=5.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "ipykernel>=6.29",
+    "jupyterlab>=4.2",
+    "nbformat>=5.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/Atedgx12/Comp653StockMLModel"
+Issues = "https://github.com/Atedgx12/Comp653StockMLModel/issues"
+
+[project.scripts]
+stockml = "stockml.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"stockml" = ["py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "PL", "RUF"]
+ignore = ["PLR0913", "PLR2004"]
+
+[tool.mypy]
+python_version = "3.11"
+strict_optional = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q --strict-markers"
+markers = [
+    "slow: marks tests as slow",
+    "torch: tests that require pytorch",
+]

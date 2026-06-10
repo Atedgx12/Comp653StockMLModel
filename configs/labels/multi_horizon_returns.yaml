@@ -1,0 +1,5 @@
+name: multi_horizon_returns
+task: regression
+target: log_return
+horizons: [1, 5, 20]
+include_binary_sanity_label: true

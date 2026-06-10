@@ -1,0 +1,19 @@
+name: crypto_yfinance
+source: yfinance
+tickers:
+  mode: explicit
+  list: [BTC-USD, ETH-USD, SOL-USD, XRP-USD, ADA-USD]
+date_range:
+  start: "2018-01-01"
+  end: "2024-12-31"
+session:
+  trading_day_minutes: 1440
+  align_to_utc_midnight: true
+preprocessing:
+  use_adjusted_close: false
+  drop_zero_volume_rows: false
+  forward_fill_limit: 2
+  outlier:
+    method: winsorize_returns
+    quantile_low: 0.001
+    quantile_high: 0.999

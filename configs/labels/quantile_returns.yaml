@@ -1,0 +1,5 @@
+name: quantile_returns
+task: quantile_regression
+target: log_return
+horizons: [1, 5, 20]
+quantiles: [0.10, 0.50, 0.90]

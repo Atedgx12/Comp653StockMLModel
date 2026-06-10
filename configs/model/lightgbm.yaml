@@ -1,0 +1,15 @@
+name: lightgbm
+family: gbm
+task: regression
+params:
+  objective: regression
+  metric: rmse
+  num_leaves: 63
+  learning_rate: 0.03
+  feature_fraction: 0.85
+  bagging_fraction: 0.85
+  bagging_freq: 5
+  min_data_in_leaf: 200
+  num_iterations: 2000
+  early_stopping_rounds: 100
+  verbose: -1

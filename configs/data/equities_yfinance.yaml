@@ -1,0 +1,16 @@
+name: equities_yfinance
+source: yfinance
+tickers:
+  mode: explicit
+  list: [AAPL, MSFT, GOOGL, AMZN, META, NVDA, TSLA, JPM, V, JNJ]
+date_range:
+  start: "2010-01-01"
+  end: "2024-12-31"
+preprocessing:
+  use_adjusted_close: true
+  drop_zero_volume_rows: true
+  forward_fill_limit: 1
+  outlier:
+    method: winsorize_returns
+    quantile_low: 0.001
+    quantile_high: 0.999

@@ -1,0 +1,8 @@
+name: walk_forward
+type: expanding
+initial_train_years: 5
+validation_years: 1
+test_years: 1
+step_years: 1
+embargo_days: 20
+purge_days: 20

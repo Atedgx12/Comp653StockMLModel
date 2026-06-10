@@ -1,0 +1,29 @@
+name: standard_technicals
+groups:
+  trend_momentum:
+    enabled: true
+    ema_periods: [9, 21, 50, 200]
+    macd: { fast: 12, slow: 26, signal: 9 }
+    rsi_period: 14
+    roc_periods: [5, 10, 20]
+  volatility:
+    enabled: true
+    realized_vol_period: 20
+    atr_period: 14
+    bollinger: { period: 20, num_std: 2.0 }
+  price_structure:
+    enabled: true
+    rolling_high_low_periods: [20, 60, 252]
+    close_in_range_period: 20
+  regime:
+    enabled: true
+    market_proxy_ticker: SPY
+    market_realized_vol_period: 20
+    vol_buckets: [0.10, 0.20, 0.40]
+scaling:
+  per_asset_zscore: true
+  zscore_window: 252
+correlation_pruning:
+  enabled: true
+  threshold: 0.95
+  cluster_method: average

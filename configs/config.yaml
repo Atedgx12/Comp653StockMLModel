@@ -1,0 +1,17 @@
+# Default Hydra root config for stockml.
+# Override individual blocks with --config-name or composition.
+
+defaults:
+  - data: equities_kaggle
+  - features: standard_technicals
+  - labels: multi_horizon_returns
+  - splits: walk_forward
+  - model: lightgbm
+  - training: default
+  - _self_
+
+run:
+  name: ${model.name}_${labels.name}_${now:%Y%m%d_%H%M%S}
+  output_dir: artifacts/${run.name}
+  seed: 42
+  log_level: INFO
