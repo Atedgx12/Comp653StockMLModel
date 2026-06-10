@@ -39,7 +39,7 @@ class LinearRegressor(BaseModel):
         X_val=None,
         y_val=None,
         feature_names=None,
-    ) -> "LinearRegressor":
+    ) -> LinearRegressor:
         self._feature_names = list(feature_names) if feature_names is not None else None
         self._estimator.fit(X_train, y_train)
         return self

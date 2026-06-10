@@ -5,7 +5,9 @@ from stockml.splits.walk_forward import expanding_walk_forward_folds, purge_and_
 
 def test_walk_forward_folds_are_disjoint_in_test():
     idx = pd.bdate_range("2010-01-01", "2024-12-31")
-    folds = list(expanding_walk_forward_folds(idx, initial_train_years=4, validation_years=1, test_years=1, step_years=1))
+    folds = list(
+        expanding_walk_forward_folds(idx, initial_train_years=4, validation_years=1, test_years=1, step_years=1)
+    )
     test_ranges = [(f.test_start, f.test_end) for f in folds]
     for i in range(len(test_ranges) - 1):
         assert test_ranges[i][1] <= test_ranges[i + 1][0]

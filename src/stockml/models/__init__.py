@@ -4,16 +4,16 @@ Each model exposes the ``BaseModel`` interface so the training driver can
 swap families behind a single config switch.
 """
 from .base import BaseModel
-from .linear import LinearRegressor, LogisticClassifier
 from .lightgbm_models import LightGBMClassifier, LightGBMRegressor
+from .linear import LinearRegressor, LogisticClassifier
 from .online_linear import OnlineLinearRegressor
 
 __all__ = [
     "BaseModel",
+    "LightGBMClassifier",
+    "LightGBMRegressor",
     "LinearRegressor",
     "LogisticClassifier",
-    "LightGBMRegressor",
-    "LightGBMClassifier",
     "OnlineLinearRegressor",
 ]
 
