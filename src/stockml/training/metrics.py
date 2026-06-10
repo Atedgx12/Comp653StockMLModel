@@ -68,7 +68,8 @@ def classification_report(
     }
     if y_proba is not None:
         try:
-            out["log_loss"] = float(log_loss(y_true, y_proba, labels=list(labels) if labels else None))
+            labels_arg = list(labels) if labels else None
+            out["log_loss"] = float(log_loss(y_true, y_proba, labels=labels_arg))
         except ValueError:
             out["log_loss"] = float("nan")
         out["brier"] = brier_score(np.asarray(y_true), y_proba)

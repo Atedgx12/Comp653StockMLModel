@@ -13,7 +13,7 @@ def set_global_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     try:
-        import torch
+        import torch  # noqa: PLC0415
 
         torch.manual_seed(seed)
         if torch.cuda.is_available():

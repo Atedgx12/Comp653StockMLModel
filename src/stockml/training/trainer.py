@@ -53,6 +53,24 @@ def _compute_metrics(task: str, y_true, y_pred, y_proba=None) -> dict[str, float
     return regression_report(y_true, y_pred)
 
 
+def _save_artifacts(
+    result: TrainResult,
+    model: BaseModel,
+    artifacts_dir: str | Path,
+) -> None:
+    out = Path(artifacts_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    df_metrics = result.aggregate()
+    if not df_metrics.empty:
+        df_metrics.to_csv(out / "fold_metrics.csv", index=False)
+    if result.feature_importances:
+        pd.Series(result.feature_importances).sort_values(ascending=False).to_csv(
+            out / "feature_importances.csv"
+        )
+    if hasattr(model, "save"):
+        model.save(out / "model.joblib")
+
+
 def train_walk_forward(
     feature_panel: pd.DataFrame,
     feature_columns: list[str],
@@ -131,17 +149,7 @@ def train_walk_forward(
         result.feature_importances = importances
 
     if artifacts_dir is not None:
-        out = Path(artifacts_dir)
-        out.mkdir(parents=True, exist_ok=True)
-        df_metrics = result.aggregate()
-        if not df_metrics.empty:
-            df_metrics.to_csv(out / "fold_metrics.csv", index=False)
-        if result.feature_importances:
-            pd.Series(result.feature_importances).sort_values(ascending=False).to_csv(
-                out / "feature_importances.csv"
-            )
-        if hasattr(model, "save"):
-            model.save(out / "model.joblib")
+        _save_artifacts(result, model, artifacts_dir)
 
     if not result.fold_results:
         logger.warning(

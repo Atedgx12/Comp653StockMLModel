@@ -21,7 +21,7 @@ class BaseModel(ABC):
         y_train: np.ndarray,
         X_val: np.ndarray | None = None,
         y_val: np.ndarray | None = None,
-    ) -> "BaseModel":
+    ) -> BaseModel:
         ...
 
     @abstractmethod
@@ -41,7 +41,7 @@ class BaseModel(ABC):
         joblib.dump(self, path)
 
     @classmethod
-    def load(cls, path: str | Path) -> "BaseModel":
+    def load(cls, path: str | Path) -> BaseModel:
         return joblib.load(path)
 
     def get_params(self) -> dict[str, Any]:

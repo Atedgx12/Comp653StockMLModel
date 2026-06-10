@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
+import yfinance as yf
 
 from ..utils.logging import get_logger
 
@@ -99,8 +100,6 @@ class YFinanceLoader:
     interval: str = "1d"
 
     def load_ticker(self, ticker: str) -> pd.DataFrame:
-        import yfinance as yf
-
         logger.info("Downloading %s via yfinance", ticker)
         raw = yf.download(
             ticker,

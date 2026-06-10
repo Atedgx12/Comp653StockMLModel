@@ -39,7 +39,7 @@ class LinearRegressor(BaseModel):
         X_val=None,
         y_val=None,
         feature_names=None,
-    ) -> "LinearRegressor":
+    ) -> LinearRegressor:
         self._feature_names = list(feature_names) if feature_names is not None else None
         self._estimator.fit(X_train, y_train)
         return self
@@ -50,7 +50,10 @@ class LinearRegressor(BaseModel):
     def feature_importances(self) -> dict[str, float] | None:
         if self._feature_names is None:
             return None
-        return {n: float(c) for n, c in zip(self._feature_names, self._estimator.coef_, strict=False)}
+        return {
+            n: float(c)
+            for n, c in zip(self._feature_names, self._estimator.coef_, strict=False)
+        }
 
 
 class LogisticClassifier(BaseModel):

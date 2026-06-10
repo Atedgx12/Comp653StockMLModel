@@ -62,7 +62,7 @@ class _TorchSequenceModel(BaseModel):
             raise ValueError(
                 "Sequence models expect X with shape (n_samples, window, n_features)"
             )
-        n_samples, window, n_features = X_train.shape
+        n_samples, _window, n_features = X_train.shape
         output_dim = 1 if y_train.ndim == 1 else y_train.shape[1]
         self.module = self._build_module(n_features, output_dim).to(self._device)
         opt = torch.optim.AdamW(
@@ -70,7 +70,8 @@ class _TorchSequenceModel(BaseModel):
         )
         loss_fn = nn.MSELoss() if self.task != "classification" else nn.CrossEntropyLoss()
         x = torch.tensor(X_train, dtype=torch.float32, device=self._device)
-        y = torch.tensor(y_train, dtype=torch.float32 if self.task != "classification" else torch.long, device=self._device)
+        y_dtype = torch.float32 if self.task != "classification" else torch.long
+        y = torch.tensor(y_train, dtype=y_dtype, device=self._device)
         if self.task != "classification" and y.ndim == 1:
             y = y.unsqueeze(-1)
         self.module.train()
@@ -101,7 +102,7 @@ class TCNRegressor(_TorchSequenceModel):
 
     name = "tcn"
 
-    def _build_module(self, input_features: int, output_dim: int) -> "nn.Module":
+    def _build_module(self, input_features: int, output_dim: int) -> nn.Module:
         channels = self.params.get("channels", [64, 64, 64, 64])
         kernel_size = int(self.params.get("kernel_size", 3))
         dropout = float(self.params.get("dropout", 0.1))
@@ -131,7 +132,7 @@ class TCNRegressor(_TorchSequenceModel):
                 self.body = body
                 self.head = head
 
-            def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
                 x = x.transpose(1, 2)
                 x = self.body(x)
                 x = x[:, :, -1]
@@ -145,7 +146,7 @@ class TransformerRegressor(_TorchSequenceModel):
 
     name = "transformer"
 
-    def _build_module(self, input_features: int, output_dim: int) -> "nn.Module":
+    def _build_module(self, input_features: int, output_dim: int) -> nn.Module:
         d_model = int(self.params.get("d_model", 128))
         num_heads = int(self.params.get("num_heads", 4))
         num_layers = int(self.params.get("num_layers", 3))
@@ -175,8 +176,8 @@ class TransformerRegressor(_TorchSequenceModel):
                 self.patch_len = patch_len
                 self.n_patches = n_patches
 
-            def forward(self, x: "torch.Tensor") -> "torch.Tensor":
-                b, t, f = x.shape
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                b, _t, f = x.shape
                 x = x.reshape(b, self.n_patches, self.patch_len * f)
                 x = self.proj(x)
                 x = self.encoder(x)
@@ -191,7 +192,7 @@ class LSTMRegressor(_TorchSequenceModel):
 
     name = "lstm"
 
-    def _build_module(self, input_features: int, output_dim: int) -> "nn.Module":
+    def _build_module(self, input_features: int, output_dim: int) -> nn.Module:
         hidden_size = int(self.params.get("hidden_size", 128))
         num_layers = int(self.params.get("num_layers", 2))
         dropout = float(self.params.get("dropout", 0.2))
@@ -210,7 +211,7 @@ class LSTMRegressor(_TorchSequenceModel):
                 self.rnn = rnn
                 self.head = head
 
-            def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
                 out, _ = self.rnn(x)
                 last = out[:, -1, :]
                 return self.head(last)

@@ -11,7 +11,16 @@ import argparse
 import sys
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
+
 from . import __version__
+from .data.preprocessing import drop_zero_volume, winsorize_returns
+from .features.pipeline import build_features
+from .labels.returns import multi_horizon_return_labels
+from .models import build_model
+from .training.trainer import train_walk_forward
+from .utils.io import read_yaml
 from .utils.logging import configure_logging, get_logger
 
 logger = get_logger(__name__)
@@ -23,20 +32,10 @@ def _cmd_version(_: argparse.Namespace) -> int:
 
 
 def _cmd_demo(_: argparse.Namespace) -> int:
-    from .data.preprocessing import drop_zero_volume, winsorize_returns
-    from .features.pipeline import build_features
-    from .labels.returns import multi_horizon_return_labels
-    from .models import build_model
-    from .training.trainer import train_walk_forward
-    from .utils.io import read_yaml
-
     cfg_root = Path(__file__).resolve().parents[2] / "configs"
     feature_cfg = read_yaml(cfg_root / "features" / "standard_technicals.yaml")
     splits_cfg = read_yaml(cfg_root / "splits" / "walk_forward.yaml")
     model_cfg = read_yaml(cfg_root / "model" / "lightgbm.yaml")
-
-    import numpy as np
-    import pandas as pd
 
     rng = np.random.default_rng(0)
     dates = pd.bdate_range("2010-01-01", "2024-12-31")

@@ -32,7 +32,9 @@ def test_end_to_end_lightgbm_runs(synthetic_panel):
         "ticker",
         "y_logret_h5",
     }
-    feature_columns = [c for c in feats.columns if c not in drop and not c.startswith("log_return_")]
+    feature_columns = [
+        c for c in feats.columns if c not in drop and not c.startswith("log_return_")
+    ]
 
     model = build_model(model_cfg, task="regression")
     result = train_walk_forward(
