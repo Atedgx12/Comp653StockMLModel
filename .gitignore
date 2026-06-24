@@ -72,3 +72,6 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Data cache files
+*.parquet
