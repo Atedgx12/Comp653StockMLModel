@@ -1,0 +1,51 @@
+
+[1] Downloading ['SPY', 'AAPL', 'MSFT', 'AMD', 'JPM'] from 2015-01-01 to 2026-06-23 ...
+[2] Feature matrix: (2863, 45)  |  base rate: 0.5487
+
+[3] Walk-forward cross-validation ...
+  [LogisticRegression] fold 1/5  acc=0.5157  auc=0.5452
+  [LogisticRegression] fold 2/5  acc=0.5073  auc=0.5260
+  [LogisticRegression] fold 3/5  acc=0.4927  auc=0.5110
+  [LogisticRegression] fold 4/5  acc=0.4927  auc=0.5153
+  [LogisticRegression] fold 5/5  acc=0.5220  auc=0.4868
+  [LogisticRegression] mean acc=0.5061  mean auc=0.5169
+
+  [RandomForest] fold 1/5  acc=0.5073  auc=0.5221
+  [RandomForest] fold 2/5  acc=0.5325  auc=0.5668
+  [RandomForest] fold 3/5  acc=0.5157  auc=0.4906
+  [RandomForest] fold 4/5  acc=0.5094  auc=0.5198
+  [RandomForest] fold 5/5  acc=0.5241  auc=0.5223
+  [RandomForest] mean acc=0.5178  mean auc=0.5243
+
+  [LightGBM-GPU] fold 1/5  acc=0.5031  auc=0.5287
+  [LightGBM-GPU] fold 2/5  acc=0.4822  auc=0.5117
+  [LightGBM-GPU] fold 3/5  acc=0.5262  auc=0.4950
+  [LightGBM-GPU] fold 4/5  acc=0.4738  auc=0.4884
+  [LightGBM-GPU] fold 5/5  acc=0.5388  auc=0.5495
+  [LightGBM-GPU] mean acc=0.5048  mean auc=0.5147
+
+
+=== Cross-Validation Summary ===
+                         acc       auc
+LogisticRegression  0.506080  0.516857
+RandomForest        0.517820  0.524298
+LightGBM-GPU        0.504822  0.514668
+[4] Retraining final LightGBM model on full dataset ...
+
+=== Final Model Test-Set Results ===
+  Accuracy : 0.5218
+  AUC      : 0.5292
+              precision    recall  f1-score   support
+
+        Down       0.45      0.53      0.48       245
+          Up       0.59      0.52      0.55       328
+
+    accuracy                           0.52       573
+   macro avg       0.52      0.52      0.52       573
+weighted avg       0.53      0.52      0.52       573
+
+  Saved model and scaler to D:\StockModel
+  Saved feature_importance.png
+  Saved cumulative_return.png
+
+Done.
