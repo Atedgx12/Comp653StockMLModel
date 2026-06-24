@@ -1,0 +1,24 @@
+family: unified_course_network
+
+params:
+  # MLP branch hidden layer widths (Branch C)
+  hidden_sizes: [128, 64]
+
+  # Adam optimiser
+  lr: 0.001
+  beta1: 0.9
+  beta2: 0.999
+
+  # Regularisation
+  lam: 0.0003          # L2 weight-decay on W matrices
+  dropout_rate: 0.4    # inverted dropout on MLP branch activations
+  meta_dropout: 0.2    # inverted dropout on meta-layer input (cross-branch)
+
+  # Training schedule
+  epochs: 500
+  batch_size: 2048
+  val_frac: 0.15       # temporal hold-out fraction for best-checkpoint tracking
+  verbose: 20          # print progress every N epochs (0 = silent)
+
+  seed: 42
+  use_sent: false      # set true to activate Branch D (VADER sentiment)

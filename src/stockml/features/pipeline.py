@@ -40,12 +40,7 @@ def build_features(
     feature_cfg: dict[str, Any],
     market: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Run the configured feature pipeline over a multi ticker panel.
-
-    Returns a frame indexed by date with a ticker column and feature columns
-    appended. The pipeline operates per asset so rolling windows do not bleed
-    across tickers.
-    """
+    """Run the configured feature pipeline over a multi ticker panel."""
     groups = feature_cfg.get("groups", {})
     out = panel.copy()
 
@@ -84,3 +79,54 @@ def build_features(
         )
 
     return out
+
+
+# ---------------------------------------------------------------------------
+# COMP 653 cross-sectional pipeline
+# ---------------------------------------------------------------------------
+
+from .technicals import COURSE_FEATURE_NAMES, build_course_features  # noqa: E402
+
+
+def build_cross_sectional_features(
+    close: pd.DataFrame,
+    min_ticker_len: int = 756,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Build the 32-feature cross-sectional panel from a wide close-price frame.
+
+    Parameters
+    ----------
+    close : pd.DataFrame
+        Wide adjusted-close prices: rows = dates (sorted), columns = tickers.
+    min_ticker_len : int
+        Minimum price history per ticker (default 756 = ~3 years).
+
+    Returns
+    -------
+    features : pd.DataFrame
+        Stacked long frame with columns [*COURSE_FEATURE_NAMES, "_fwd"] plus
+        cross-sectionally ranked versions of all feature columns (suffix
+        ``_rank``).  Index is (date, ticker).
+    feature_names : list of str
+        Names of the ranked feature columns.
+    """
+    pieces: list[pd.DataFrame] = []
+    for ticker in close.columns:
+        df = build_course_features(close[ticker].dropna(), min_len=min_ticker_len)
+        if df is None:
+            continue
+        df["ticker"] = ticker
+        pieces.append(df)
+
+    if not pieces:
+        raise RuntimeError("No tickers had enough history")
+
+    panel = pd.concat(pieces).sort_index()
+
+    # Cross-sectional rank (percentile) per date
+    ranked_names = [f"{c}_rank" for c in COURSE_FEATURE_NAMES]
+    panel[ranked_names] = (
+        panel.groupby(level=0)[COURSE_FEATURE_NAMES]
+        .rank(pct=True)
+    )
+    return panel, ranked_names

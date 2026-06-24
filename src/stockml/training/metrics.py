@@ -14,6 +14,46 @@ from sklearn.metrics import (
 )
 
 
+def roc_auc_wilcoxon(y_true: np.ndarray, y_score: np.ndarray) -> float:
+    """Binary ROC-AUC via the Wilcoxon rank-sum statistic.  O(n log n).
+
+    Equivalent to sklearn ``roc_auc_score`` for binary labels but avoids the
+    trapezoidal approximation overhead.  The relationship is::
+
+        AUC = (sum of ranks of positives - n1*(n1+1)/2) / (n0 * n1)
+
+    where ``n1 = sum(y_true == 1)`` and ``n0 = sum(y_true == 0)``.
+
+    Parameters
+    ----------
+    y_true  : array-like of 0/1 labels
+    y_score : array-like of continuous predicted scores
+
+    Returns
+    -------
+    float in [0, 1]
+    """
+    y_true  = np.asarray(y_true,  dtype=float)
+    y_score = np.asarray(y_score, dtype=float)
+    n1 = int(y_true.sum())
+    n0 = len(y_true) - n1
+    if n1 == 0 or n0 == 0:
+        return float("nan")
+    order = np.argsort(y_score)
+    ranks = np.empty(len(y_score), dtype=float)
+    ranks[order] = np.arange(1, len(y_score) + 1, dtype=float)
+    # Average ranks for ties
+    unique_scores, inverse, counts = np.unique(y_score, return_inverse=True, return_counts=True)
+    if (counts > 1).any():
+        avg_ranks = np.zeros(len(unique_scores))
+        for i, s in enumerate(unique_scores):
+            mask = y_score == s
+            avg_ranks[i] = ranks[mask].mean()
+        ranks = avg_ranks[inverse]
+    u_stat = float(ranks[y_true == 1].sum()) - n1 * (n1 + 1) / 2.0
+    return u_stat / (n0 * n1)
+
+
 def information_coefficient(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     """Spearman rank correlation between predicted and realized returns."""
     if len(y_true) < 2:

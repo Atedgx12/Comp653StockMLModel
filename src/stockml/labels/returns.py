@@ -116,3 +116,49 @@ def sequence_return_labels(
     return multi_horizon_return_labels(panel, horizons=horizons).rename(
         columns={f"y_logret_h{h}": f"y_seq_h{h}" for h in horizons}
     )
+
+
+def cross_sectional_quantile_labels(
+    fwd_returns: pd.Series,
+    top_pct: float = 0.30,
+    bottom_pct: float = 0.30,
+    label_col: str = "y_cs_quantile",
+) -> pd.Series:
+    """Cross-sectional top/bottom quantile classification label.
+
+    At each date, tickers in the top ``top_pct`` of 1-day forward returns
+    receive label 1 ("up"), tickers in the bottom ``bottom_pct`` receive
+    label 0 ("down"), and the middle band is dropped (returns NaN).
+
+    This is the label used by :class:`~stockml.models.UnifiedCourseNetwork`.
+
+    Parameters
+    ----------
+    fwd_returns : pd.Series
+        1-day forward log returns with a MultiIndex (date, ticker) or a
+        DatetimeIndex (single asset).
+    top_pct, bottom_pct : float
+        Fraction of the cross-section assigned to each class per day.
+
+    Returns
+    -------
+    pd.Series
+        Float labels (0.0, 1.0, or NaN for the dropped middle band).
+    """
+    def _label_one_day(group: pd.Series) -> pd.Series:
+        n = len(group)
+        top_n    = max(1, int(round(n * top_pct)))
+        bottom_n = max(1, int(round(n * bottom_pct)))
+        rank = group.rank(ascending=True)
+        out  = pd.Series(np.nan, index=group.index)
+        out[rank <= bottom_n]     = 0.0
+        out[rank >  n - top_n]    = 1.0
+        return out
+
+    if isinstance(fwd_returns.index, pd.MultiIndex):
+        date_level = fwd_returns.index.get_level_values(0)
+        labels = fwd_returns.groupby(date_level, group_keys=False).apply(_label_one_day)
+    else:
+        labels = fwd_returns.groupby(level=0, group_keys=False).apply(_label_one_day)
+    labels.name = label_col
+    return labels
