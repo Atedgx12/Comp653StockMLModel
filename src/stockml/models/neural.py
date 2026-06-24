@@ -1,22 +1,396 @@
-"""Sequence model stubs gated behind the optional torch extra.
+"""Neural network models for the stockml package.
 
-These classes intentionally provide minimal but runnable implementations so
-the project skeleton stays end to end testable without forcing every grader
-to install PyTorch. Calling any factory in this module without ``torch``
-installed raises an informative error.
+Contains two families:
 
-Heavy lifting (training loops, learning rate schedules, mixed precision) is
-deliberately not implemented yet. The goal of the scaffold is to exercise
-the contract between the trainer and the sequence models, not to ship a
-state of the art forecaster on the first commit.
+1. **UnifiedCourseNetwork** — pure-NumPy 4-branch network (LR + NB + MLP +
+   optional Sentiment) trained end-to-end with Adam and cosine LR annealing.
+   No external dependencies beyond NumPy.  Implements the COMP 653 Module 5
+   algorithm ensemble with a learned meta-layer.
+
+2. **Torch sequence models** (TCN, Transformer, LSTM) — gated behind the
+   optional ``torch`` extra.  Calling any factory in this group without
+   PyTorch installed raises an informative error.
 """
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import numpy as np
 
 from .base import BaseModel
+
+# ---------------------------------------------------------------------------
+# Shared math primitives (no external deps)
+# ---------------------------------------------------------------------------
+
+def _softmax(Z: np.ndarray) -> np.ndarray:
+    E = np.exp(Z - Z.max(axis=1, keepdims=True))
+    return E / E.sum(axis=1, keepdims=True)
+
+
+def _sigmoid(Z: np.ndarray) -> np.ndarray:
+    return 1.0 / (1.0 + np.exp(-np.clip(Z, -500, 500)))
+
+
+def _cross_entropy(Y_hat: np.ndarray, Y_oh: np.ndarray) -> float:
+    return -np.mean(np.sum(Y_oh * np.log(np.clip(Y_hat, 1e-12, 1.0)), axis=1))
+
+
+# ---------------------------------------------------------------------------
+# UnifiedCourseNetwork — COMP 653 Module 5 ensemble
+# ---------------------------------------------------------------------------
+
+class UnifiedCourseNetwork(BaseModel):
+    """4-branch network trained jointly via backprop + Adam (COMP 653).
+
+    Architecture
+    ------------
+    Input x  (d MI-selected cross-sectional rank features)
+          |
+    +-----+----------------------------+-------------------+------------+
+    | Branch A  LR (Lec 5-2)          | Branch B  NB      | Branch C   |
+    | Linear(d->K) -> Sigmoid          | Gaussian norm     | MLP        |
+    |                                  | -> Linear -> Sig  | ReLU stack |
+    +-----+----------------------------+-------------------+-----+------+
+          |                                                       |
+          +------ concat(a_lr, a_nb, a_mlp [, a_sent]) ----------+
+          |
+    Meta-layer: Linear -> Softmax   (with optional meta dropout)
+          |
+    P(Up), P(Down)
+
+    Branch D (optional) processes a single VADER sentiment score through
+    Linear(1->K)->Sigmoid and appends its output to the meta-layer input.
+
+    Parameters
+    ----------
+    hidden_sizes : tuple of int
+        Hidden-layer widths for Branch C MLP.
+    lr : float
+        Initial Adam learning rate.  Decayed via cosine annealing.
+    epochs : int
+        Total training epochs (no hard early stop; best checkpoint restored).
+    lam : float
+        L2 weight-decay coefficient applied to all W matrices.
+    batch_size : int
+        Mini-batch size.
+    beta1, beta2 : float
+        Adam moment decay rates.
+    dropout_rate : float
+        Inverted dropout probability for MLP branch activations.
+    meta_dropout : float
+        Inverted dropout probability applied to the concatenated meta-layer
+        input.  Forces the meta-layer to learn robust cross-branch weights.
+    val_frac : float
+        Fraction of (time-ordered) rows held out for validation tracking.
+    verbose : int
+        Print progress every ``verbose`` epochs.  0 = silent.
+    seed : int
+        RNG seed for reproducibility.
+    use_sent : bool
+        If True, the last column of X is treated as the VADER sentiment score
+        (Branch D); all other columns are price features.
+    """
+
+    name = "unified_course_network"
+
+    def __init__(
+        self,
+        hidden_sizes: tuple[int, ...] = (128, 64),
+        lr: float = 0.001,
+        epochs: int = 200,
+        lam: float = 1e-4,
+        batch_size: int = 2048,
+        beta1: float = 0.9,
+        beta2: float = 0.999,
+        dropout_rate: float = 0.4,
+        meta_dropout: float = 0.2,
+        val_frac: float = 0.15,
+        verbose: int = 20,
+        seed: int = 42,
+        use_sent: bool = False,
+    ) -> None:
+        self.hidden_sizes  = hidden_sizes
+        self.lr            = lr
+        self.epochs        = epochs
+        self.lam           = lam
+        self.batch_size    = batch_size
+        self.beta1         = beta1
+        self.beta2         = beta2
+        self.dropout_rate  = dropout_rate
+        self.meta_dropout  = meta_dropout
+        self.val_frac      = val_frac
+        self.verbose       = verbose
+        self.seed          = seed
+        self.use_sent      = use_sent
+
+        self._params: dict[str, np.ndarray] = {}
+        self._m: dict[str, np.ndarray] = {}
+        self._v: dict[str, np.ndarray] = {}
+        self._t: int = 0
+        self._n_classes: int | None = None
+        self._rng = np.random.default_rng(seed)
+
+        self.loss_history: list[float] = []
+        self.val_loss_history: list[float] = []
+
+    # ------------------------------------------------------------------
+    # Weight initialisation
+    # ------------------------------------------------------------------
+
+    def _init_weights(self, d: int, K: int) -> None:
+        rng_ = np.random.default_rng(self.seed)
+        self._n_classes = K
+        self._rng = np.random.default_rng(self.seed + 1)  # separate rng for dropout
+
+        dp = d - 1 if self.use_sent else d  # price feature count
+
+        # Branch A: Logistic Regression  dp -> K
+        self._params["W_lr"] = rng_.standard_normal((dp, K)) * math.sqrt(1.0 / dp)
+        self._params["b_lr"] = np.zeros(K)
+
+        # Branch B: NB learnable Gaussian normalisation  dp -> K
+        self._params["mu_nb"]   = np.zeros(dp)
+        self._params["lsig_nb"] = np.zeros(dp)
+        self._params["W_nb"]    = rng_.standard_normal((dp, K)) * math.sqrt(1.0 / dp)
+        self._params["b_nb"]    = np.zeros(K)
+
+        # Branch C: MLP hidden layers  dp -> h1 -> h2 -> ...
+        sizes = [dp] + list(self.hidden_sizes)
+        for i in range(len(sizes) - 1):
+            s = math.sqrt(2.0 / sizes[i])
+            self._params[f"Wm{i+1}"] = rng_.standard_normal((sizes[i], sizes[i+1])) * s
+            self._params[f"bm{i+1}"] = np.zeros(sizes[i+1])
+
+        # Branch D: Sentiment  1 -> K
+        if self.use_sent:
+            self._params["W_sent"] = rng_.standard_normal((1, K)) * 0.1
+            self._params["b_sent"] = np.zeros(K)
+
+        # Meta-layer
+        H_last  = self.hidden_sizes[-1]
+        meta_in = K + K + H_last + (K if self.use_sent else 0)
+        self._params["W_meta"] = rng_.standard_normal((meta_in, K)) * math.sqrt(2.0 / meta_in)
+        self._params["b_meta"] = np.zeros(K)
+
+        for key in self._params:
+            self._m[key] = np.zeros_like(self._params[key])
+            self._v[key] = np.zeros_like(self._params[key])
+
+    # ------------------------------------------------------------------
+    # Forward / backward / update
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _relu(Z: np.ndarray) -> np.ndarray:
+        return np.maximum(0.0, Z)
+
+    @staticmethod
+    def _relu_g(Z: np.ndarray) -> np.ndarray:
+        return (Z > 0).astype(float)
+
+    def _forward(self, X: np.ndarray, training: bool = True) -> dict:
+        if self.use_sent:
+            X_price, X_sent = X[:, :-1], X[:, -1:]
+        else:
+            X_price = X
+
+        c: dict = {"X": X_price}
+
+        # Branch A
+        z_lr = X_price @ self._params["W_lr"] + self._params["b_lr"]
+        a_lr = _sigmoid(z_lr)
+        c.update({"z_lr": z_lr, "a_lr": a_lr})
+
+        # Branch B
+        sig  = np.exp(self._params["lsig_nb"]) + 1e-8
+        X_n  = (X_price - self._params["mu_nb"]) / sig
+        z_nb = X_n @ self._params["W_nb"] + self._params["b_nb"]
+        a_nb = _sigmoid(z_nb)
+        c.update({"sig": sig, "X_n": X_n, "z_nb": z_nb, "a_nb": a_nb})
+
+        # Branch C
+        A = X_price
+        mlp: dict = {"A0": X_price}
+        p = self.dropout_rate
+        for i in range(len(self.hidden_sizes)):
+            Z = A @ self._params[f"Wm{i+1}"] + self._params[f"bm{i+1}"]
+            A = self._relu(Z)
+            if training and p > 0:
+                mask = (self._rng.random(A.shape) >= p).astype(float) / (1.0 - p)
+                A    = A * mask
+                mlp[f"drop{i+1}"] = mask
+            mlp[f"Z{i+1}"] = Z
+            mlp[f"A{i+1}"] = A
+        c["mlp"] = mlp
+
+        # Branch D (optional)
+        parts = [a_lr, a_nb, A]
+        if self.use_sent:
+            z_sent = X_sent @ self._params["W_sent"] + self._params["b_sent"]
+            a_sent = _sigmoid(z_sent)
+            c.update({"X_sent": X_sent, "z_sent": z_sent, "a_sent": a_sent})
+            parts.append(a_sent)
+
+        # Meta-layer with optional dropout
+        cat = np.hstack(parts)
+        if training and self.meta_dropout > 0:
+            md  = (self._rng.random(cat.shape) >= self.meta_dropout).astype(float) \
+                  / (1.0 - self.meta_dropout)
+            cat = cat * md
+            c["meta_drop"] = md
+        z_meta = cat @ self._params["W_meta"] + self._params["b_meta"]
+        c.update({"cat": cat, "Y_hat": _softmax(z_meta)})
+        return c
+
+    def _backward(self, c: dict, Y_oh: np.ndarray) -> dict:
+        X = c["X"]
+        N = Y_oh.shape[0]
+        K = self._n_classes
+        g: dict = {}
+
+        d = (c["Y_hat"] - Y_oh) / N
+
+        g["W_meta"] = c["cat"].T @ d
+        g["b_meta"] = d.sum(0)
+        dc = d @ self._params["W_meta"].T
+        if "meta_drop" in c:
+            dc = dc * c["meta_drop"]
+
+        H     = self.hidden_sizes[-1]
+        d_lr  = dc[:, :K]
+        d_nb  = dc[:, K:2*K]
+        d_mlp = dc[:, 2*K:2*K+H]
+
+        # Branch A
+        dz_lr      = d_lr * c["a_lr"] * (1 - c["a_lr"])
+        g["W_lr"]  = X.T @ dz_lr
+        g["b_lr"]  = dz_lr.sum(0)
+
+        # Branch B
+        dz_nb        = d_nb * c["a_nb"] * (1 - c["a_nb"])
+        g["W_nb"]    = c["X_n"].T @ dz_nb
+        g["b_nb"]    = dz_nb.sum(0)
+        dX_n         = dz_nb @ self._params["W_nb"].T
+        g["mu_nb"]   = (-dX_n / c["sig"]).sum(0)
+        g["lsig_nb"] = (-dX_n * c["X_n"]).sum(0)
+
+        # Branch D
+        if self.use_sent:
+            d_sent  = dc[:, 2*K+H:]
+            dz_sent = d_sent * c["a_sent"] * (1 - c["a_sent"])
+            g["W_sent"] = c["X_sent"].T @ dz_sent
+            g["b_sent"] = dz_sent.sum(0)
+
+        # Branch C
+        dm  = d_mlp
+        mlp = c["mlp"]
+        for i in range(len(self.hidden_sizes), 0, -1):
+            if f"drop{i}" in mlp:
+                dm = dm * mlp[f"drop{i}"]
+            dm             = dm * self._relu_g(mlp[f"Z{i}"])
+            g[f"Wm{i}"]   = mlp[f"A{i-1}"].T @ dm
+            g[f"bm{i}"]   = dm.sum(0)
+            if i > 1:
+                dm = dm @ self._params[f"Wm{i}"].T
+        return g
+
+    def _adam_update(self, g: dict, lr: float) -> None:
+        self._t += 1
+        eps = 1e-8
+        b1c = 1.0 - self.beta1 ** self._t
+        b2c = 1.0 - self.beta2 ** self._t
+        for k, val in self._params.items():
+            grad = g[k]
+            if k.startswith("W"):
+                grad = grad + self.lam * val
+            self._m[k] = self.beta1 * self._m[k] + (1 - self.beta1) * grad
+            self._v[k] = self.beta2 * self._v[k] + (1 - self.beta2) * grad ** 2
+            m_hat = self._m[k] / b1c
+            v_hat = self._v[k] / b2c
+            self._params[k] = val - lr * m_hat / (np.sqrt(v_hat) + eps)
+
+    # ------------------------------------------------------------------
+    # BaseModel interface
+    # ------------------------------------------------------------------
+
+    def fit(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_val: np.ndarray | None = None,
+        y_val: np.ndarray | None = None,
+        feature_names: list[str] | None = None,
+    ) -> "UnifiedCourseNetwork":
+        K = int(len(np.unique(y_train)))
+        self._init_weights(X_train.shape[1], K)
+        self.loss_history.clear()
+        self.val_loss_history.clear()
+
+        # Use caller-supplied validation set or split temporally
+        if X_val is not None and y_val is not None:
+            X_tr, y_tr = X_train, y_train
+        else:
+            n_val = max(int(len(X_train) * self.val_frac), 1)
+            X_tr, y_tr  = X_train[:-n_val], y_train[:-n_val]
+            X_val, y_val = X_train[-n_val:], y_train[-n_val:]
+
+        idx_tr     = np.arange(len(X_tr))
+        best_val   = np.inf
+        best_state: dict | None = None
+
+        for epoch in range(self.epochs):
+            lr_t = self.lr * (0.01 + 0.99 * 0.5 *
+                              (1.0 + math.cos(math.pi * epoch / self.epochs)))
+            self._rng.shuffle(idx_tr)
+            ep_loss = 0.0
+            n_b = 0
+            for s in range(0, len(X_tr), self.batch_size):
+                b    = idx_tr[s:s + self.batch_size]
+                Y_oh = np.eye(K)[y_tr[b].astype(int)]
+                c    = self._forward(X_tr[b], training=True)
+                loss = _cross_entropy(c["Y_hat"], Y_oh)
+                self._adam_update(self._backward(c, Y_oh), lr_t)
+                ep_loss += loss
+                n_b += 1
+            self.loss_history.append(ep_loss / n_b)
+
+            Y_oh_val = np.eye(K)[y_val.astype(int)]
+            c_val    = self._forward(X_val, training=False)
+            val_ce   = _cross_entropy(c_val["Y_hat"], Y_oh_val)
+            self.val_loss_history.append(val_ce)
+
+            if val_ce < best_val - 1e-6:
+                best_val  = val_ce
+                best_state = {k: v.copy() for k, v in self._params.items()}
+
+            if self.verbose and (epoch + 1) % self.verbose == 0:
+                val_acc = (y_val.astype(int) ==
+                           np.argmax(c_val["Y_hat"], axis=1)).mean()
+                marker  = " *" if self._params is best_state else ""
+                print(
+                    f"  Epoch {epoch+1:4d}/{self.epochs}  "
+                    f"CE={self.loss_history[-1]:.5f}  "
+                    f"val_CE={val_ce:.5f}  val_acc={val_acc:.4f}  "
+                    f"LR={lr_t:.2e}{marker}",
+                    flush=True,
+                )
+
+        if best_state is not None:
+            self._params = best_state
+        return self
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        return self._forward(X, training=False)["Y_hat"]
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return np.argmax(self.predict_proba(X), axis=1)
+
+
+# ===========================================================================
+# Torch sequence models (optional dependency)
+# ===========================================================================
 
 try:  # pragma: no cover - depends on optional dependency
     import torch

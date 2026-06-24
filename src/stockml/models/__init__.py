@@ -6,6 +6,7 @@ swap families behind a single config switch.
 from .base import BaseModel
 from .lightgbm_models import LightGBMClassifier, LightGBMRegressor
 from .linear import LinearRegressor, LogisticClassifier
+from .neural import UnifiedCourseNetwork
 from .online_linear import OnlineLinearRegressor
 
 __all__ = [
@@ -15,6 +16,7 @@ __all__ = [
     "LinearRegressor",
     "LogisticClassifier",
     "OnlineLinearRegressor",
+    "UnifiedCourseNetwork",
 ]
 
 
@@ -32,6 +34,8 @@ def build_model(model_cfg: dict, task: str) -> BaseModel:
         return LightGBMRegressor(params)
     if family == "online_linear":
         return OnlineLinearRegressor(**params)
+    if family == "unified_course_network":
+        return UnifiedCourseNetwork(**params)
     if family in {"tcn", "transformer", "lstm"}:
         from .neural import build_torch_model
 
