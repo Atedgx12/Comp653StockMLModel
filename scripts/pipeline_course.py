@@ -708,8 +708,15 @@ class UnifiedCourseNetwork:
                       f"val_CE={val_ce:.5f}  val_acc={val_acc:.4f}  "
                       f"LR={lr_t:.2e}{marker}", flush=True)
 
-            # No hard early-stop: run the full schedule so cosine LR
-            # annealing completes.  Best checkpoint is restored at the end.
+            # Early stopping: halt once patience epochs pass without
+            # improvement.  Best-checkpoint restore still applies so the
+            # returned model uses the weights from the best validation epoch.
+            if self.patience and no_improve >= self.patience:
+                if self.verbose:
+                    print(f"    Early stop at epoch {epoch+1}"
+                          f" (no val improvement for {self.patience} epochs)",
+                          flush=True)
+                break
 
         if best_params is not None:
             self.params = best_params
@@ -1017,7 +1024,46 @@ def download_prices(tickers, start="2015-01-01",
     return close
 
 
-def make_features(close: pd.DataFrame, sent_df: pd.DataFrame = None):
+def download_volume(tickers, start="2015-01-01",
+                    end=datetime.today().strftime("%Y-%m-%d"), batch_size=50):
+    """
+    Download daily volume for every ticker and cache to vol_cache_full.parquet.
+    Volume features (relative volume, volume acceleration) are among the
+    strongest short-term signals: high volume confirms price moves.
+    """
+    cache = os.path.join(OUT_DIR, "vol_cache_full.parquet")
+    if os.path.exists(cache):
+        print("[2c] Loading cached volume data ...", flush=True)
+        vol = pd.read_parquet(cache)
+        print(f"    {vol.shape[1]} tickers x {vol.shape[0]} days.")
+        return vol
+    print(f"[2c] Downloading volume for {len(tickers)} tickers ...", flush=True)
+    frames = []
+    batches = [tickers[i:i+batch_size] for i in range(0, len(tickers), batch_size)]
+    for bi, batch in enumerate(batches):
+        try:
+            raw = yf.download(batch, start=start, end=end,
+                              auto_adjust=True, progress=False, threads=True)
+            v = raw["Volume"] if isinstance(raw.columns, pd.MultiIndex) else raw
+            ok = v.dropna(axis=1, thresh=int(0.7 * len(v))).columns.tolist()
+            frames.append(v[ok])
+        except Exception as e:
+            print(f"    volume batch {bi+1} failed: {e}", flush=True)
+        print(f"    volume batch {bi+1}/{len(batches)} done", flush=True)
+    if not frames:
+        print("    No volume data downloaded; volume features will be disabled.")
+        return None
+    vol = pd.concat(frames, axis=1)
+    vol = vol.loc[:, ~vol.columns.duplicated()]
+    vol = vol.dropna(axis=1, thresh=int(0.7 * len(vol)))
+    vol = vol.ffill().fillna(0)
+    vol.to_parquet(cache)
+    print(f"    Saved {vol.shape[1]} tickers x {vol.shape[0]} days.")
+    return vol
+
+
+def make_features(close: pd.DataFrame, sent_df: pd.DataFrame = None,
+                  vol_df: pd.DataFrame = None):
     """
     Build a cross-sectional feature matrix with two key improvements over
     a naive time-series approach:
@@ -1100,16 +1146,43 @@ def make_features(close: pd.DataFrame, sent_df: pd.DataFrame = None):
         feat["dist52l"]          = c / c.rolling(252).min()  - 1   # 1-yr low
         feat["dist3yh"]          = c / c.rolling(756).max()  - 1   # 3-yr high
         feat["dist3yl"]          = c / c.rolling(756).min()  - 1   # 3-yr low
+
+        # ---- Risk-adjusted return (Sharpe-style features) -------------------
+        # Normalising return by its own realised volatility removes the scale
+        # difference between calm and turbulent regimes, giving the model a
+        # cleaner signal about whether recent moves were unusually large.
+        for w in [5, 20, 60, 252]:
+            feat[f"sharpe{w}"]   = feat[f"ret{w}"] / (feat[f"vol{w}"] + 1e-9)
+
+        # ---- Volume features ------------------------------------------------
+        # Relative volume (today's volume vs rolling average) is one of the
+        # strongest short-term predictors: large volume tends to confirm
+        # price breakouts and momentum continuation.
+        if vol_df is not None and ticker in vol_df.columns:
+            v      = vol_df[ticker].reindex(c.index).fillna(0.0)
+            v_ma5  = v.rolling(5,  min_periods=5).mean()  + 1e-9
+            v_ma20 = v.rolling(20, min_periods=20).mean() + 1e-9
+            v_ma60 = v.rolling(60, min_periods=60).mean() + 1e-9
+            feat["rel_vol5"]  = v / v_ma20        # short-term spike vs 20-day avg
+            feat["rel_vol20"] = v / v_ma60        # medium volume vs 60-day avg
+            feat["vol_accel"] = (v / v_ma5) / (v_ma5 / v_ma20 + 1e-9)  # acceleration
+        else:
+            feat["rel_vol5"]  = 1.0
+            feat["rel_vol20"] = 1.0
+            feat["vol_accel"] = 1.0
+
         # Sentiment score for this ticker (raw VADER compound, pre-fetched).
-        # Stored as _sent so it travels with the features and gets
-        # cross-sectionally ranked along with the price features.
         if sent_df is not None and ticker in sent_df.columns:
             feat["_sent"] = sent_df[ticker].reindex(c.index).fillna(0.0)
         else:
             feat["_sent"] = 0.0
 
-        # Forward log-return (target; stored as a feature column temporarily)
-        feat["_fwd"]        = r1.shift(-1)
+        # Forward 1-day log-return (target).
+        # With a 1-day horizon, adjacent rows from the same ticker have
+        # independent labels: r[t+1] and r[t+2] share no days of outcome.
+        # This avoids the label autocorrelation that plagues multi-day
+        # horizons and lets the model train on all ~220K cross-sectional rows.
+        feat["_fwd"]        = np.log(c.shift(-1) / c)
 
         df = pd.DataFrame(feat, index=c.index).dropna()
         all_X.append(df)
@@ -1139,23 +1212,24 @@ def make_features(close: pd.DataFrame, sent_df: pd.DataFrame = None):
         feat_names_out = feat_names
         has_sent = False
 
-    # --- Cross-sectional target: top 30% vs bottom 30% ----------------------
-    # Rank forward returns within each date.  Label the top 30% as 1 (clear
-    # outperformer) and the bottom 30% as 0 (clear underperformer).  The
-    # middle 40% are dropped because their near-zero returns are noise.
-    print("    Building cross-sectional target (top 30% vs bottom 30%) ...",
+    # --- Cross-sectional target: top 20% vs bottom 20% ----------------------
+    # Tighter bands (20% vs the previous 30%) create cleaner separation:
+    # only the strongest outperformers and underperformers are labelled,
+    # reducing borderline cases near the threshold that add noise.
+    # The middle 60% are dropped.
+    print("    Building cross-sectional target (top 20% vs bottom 20%) ...",
           flush=True)
     fwd_rank = fwd_raw.groupby(fwd_raw.index).rank(pct=True)
     y = pd.Series(np.nan, index=fwd_raw.index)
-    y[fwd_rank >= 0.70] = 1   # clear outperformers
-    y[fwd_rank <= 0.30] = 0   # clear underperformers
+    y[fwd_rank >= 0.80] = 1   # clear outperformers  (top 20%)
+    y[fwd_rank <= 0.20] = 0   # clear underperformers (bottom 20%)
     keep     = y.notna()
     X_final  = X_ranked[keep]
     y_final  = y[keep].astype(int)
 
     n_kept = int(keep.sum())
     print(f"    Feature matrix: {X_final.shape}  |  base rate: {y_final.mean():.4f}"
-          f"  (kept {n_kept:,} / {len(fwd_raw):,} rows, dropped middle 40%)",
+          f"  (kept {n_kept:,} / {len(fwd_raw):,} rows, dropped middle 60%)",
           flush=True)
     return X_final, y_final, feat_names_out, has_sent
 
@@ -1297,7 +1371,10 @@ if __name__ == "__main__":
     print("\n[2b] Fetching news sentiment (VADER NLP) ...", flush=True)
     sent_df = fetch_sentiment(tickers, close.index)
 
-    X_df, y_df, feat_names, has_sent = make_features(close, sent_df)
+    # Download volume data (separate parquet cache)
+    vol_df = download_volume(tickers)
+
+    X_df, y_df, feat_names, has_sent = make_features(close, sent_df, vol_df)
 
     dates  = X_df.index.values
     X_all  = X_df.values.astype(np.float64)
@@ -1311,7 +1388,11 @@ if __name__ == "__main__":
     price_idx        = [feat_names.index(f) for f in price_feat_names]
     X_price_only     = X_all[:, price_idx]
 
-    selected    = select_features_by_mi(X_price_only, y_all, price_feat_names, k=20)
+    # Use all features — with 39 features and 200K+ rows there is no
+    # overfitting risk from keeping the full set.  MI ranking is printed
+    # for interpretability (Module 2) but nothing is dropped.
+    selected    = select_features_by_mi(X_price_only, y_all, price_feat_names,
+                                        k=len(price_feat_names))
     sel_idx     = [price_feat_names.index(f) for f in selected]
     X_sel_price = X_price_only[:, sel_idx]
 
@@ -1352,10 +1433,10 @@ if __name__ == "__main__":
     print("\n[5] Full retrain — UnifiedCourseNetwork on entire dataset ...",
           flush=True)
     unified = UnifiedCourseNetwork(
-        hidden_sizes=(128, 64), lr=0.001, epochs=500,
+        hidden_sizes=(256, 128, 64), lr=1e-3, epochs=500,
         batch_size=2048, lam=3e-4, beta1=0.9, beta2=0.999,
         dropout_rate=0.4, meta_dropout=0.2, val_frac=0.15, verbose=20,
-        use_sent=has_sent)
+        patience=40, use_sent=has_sent)
     final_acc, final_auc, mu_f, sd_f = retrain_and_plot(
         X_sel, y_all, dates, selected, unified,
         "UnifiedCourseNetwork_Adam_Sent" if has_sent else "UnifiedCourseNetwork_Adam")
