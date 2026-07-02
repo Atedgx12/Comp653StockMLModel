@@ -168,7 +168,7 @@ def get_sp500_tickers(use_hardcoded: bool = False) -> list[str]:
         try:
             tables = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
             return tables[0]["Symbol"].str.replace(".", "-", regex=False).tolist()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("Wikipedia scrape failed (%s); using hardcoded list.", exc)
     return SP500_HARDCODED
 

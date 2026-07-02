@@ -147,8 +147,8 @@ def cross_sectional_quantile_labels(
     """
     def _label_one_day(group: pd.Series) -> pd.Series:
         n = len(group)
-        top_n    = max(1, int(round(n * top_pct)))
-        bottom_n = max(1, int(round(n * bottom_pct)))
+        top_n    = max(1, round(n * top_pct))
+        bottom_n = max(1, round(n * bottom_pct))
         rank = group.rank(ascending=True)
         out  = pd.Series(np.nan, index=group.index)
         out[rank <= bottom_n]     = 0.0
