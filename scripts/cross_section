@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""Cross-sectional vs absolute direction probe.
+
+Builds simple technical features from S&P 500 close prices and compares
+predictive signal for (1) next-day absolute direction and (2) cross-sectional
+outperformance relative to the day's median forward return.
+"""
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from pipeline_course import download_prices, get_sp500_tickers, mutual_information
+
+EPOCHS, LR = 3000, 1e-7
+SUBSAMPLE = 120000
+
+
+def rsi(c, n=14):
+    d = c.diff()
+    up = d.clip(lower=0).rolling(n).mean()
+    dn = (-d.clip(upper=0)).rolling(n).mean()
+    return 100 - 100 / (1 + up / (dn + 1e-9))
+
+
+def features_and_fwd(c):
+    f = pd.DataFrame({
+        "ret1":  c.pct_change(1),  "ret5":  c.pct_change(5),
+        "ret10": c.pct_change(10), "ret20": c.pct_change(20),
+        "mom20": c / c.shift(20) - 1,
+        "vol20": c.pct_change().rolling(20).std(),
+        "rsi14": rsi(c, 14),
+        "dist_hi": c / c.rolling(60).max() - 1,
+        "dist_lo": c / c.rolling(60).min() - 1,
+    })
+    fwd = c.shift(-1) / c - 1                 
+    return f, fwd
+
+
+def fit_logistic(X, y):
+    Xi = np.column_stack((X, np.ones(len(X))))
+    beta = np.zeros(Xi.shape[1])
+
+    # Keep the existing update scale: the previous implementation used the
+    # summed gradient with a tiny LR, which is equivalent to using the mean
+    # gradient with lr = LR * N.
+    lr = LR * len(X)
+
+    prev_loss = np.inf
+    for epoch in range(EPOCHS):
+        z = np.clip(Xi @ beta, -30, 30)
+        p = 1 / (1 + np.exp(-z))
+
+        grad = (Xi.T @ (p - y)) / len(y)
+        beta = beta - lr * grad
+
+        # Early stop once progress stalls (keeps runtime bounded on large panels).
+        if epoch % 100 == 0:
+            loss = -np.mean(y * np.log(p + 1e-12) + (1 - y) * np.log(1 - p + 1e-12))
+            if prev_loss - loss < 1e-8:
+                break
+            prev_loss = loss
+
+    def predict_proba(Z):
+        Zi = np.column_stack((Z, np.ones(len(Z))))
+        return 1 / (1 + np.exp(-np.clip(Zi @ beta, -30, 30)))
+
+    return predict_proba
+
+def probe(X, y, dates, label):
+    u = np.sort(np.unique(dates)); cut = u[int(0.7 * len(u))]
+    tr, te = dates < cut, dates >= cut
+    mu, sd = X[tr].mean(0), X[tr].std(0) + 1e-9
+    Xtr, Xte = (X[tr] - mu) / sd, (X[te] - mu) / sd
+    p = fit_logistic(Xtr, y[tr])(Xte)
+    acc = np.mean((p >= 0.5) == y[te])
+    base = max(y[te].mean(), 1 - y[te].mean())
+    best_in = max(mutual_information(Xte[:, j], y[te]) for j in range(Xte.shape[1]))
+    out_mi = mutual_information(p, y[te])
+    print(f"\n  {label}")
+    print(f"    base rate (up)        = {y[te].mean():.4f}")
+    print(f"    logistic accuracy     = {acc:.4f}")
+    print(f"    trivial baseline      = {base:.4f}   (accuracy must beat THIS)")
+    print(f"    accuracy - baseline   = {acc - base:+.4f}")
+    print(f"    best input feature MI = {best_in:.4f} bits")
+    print(f"    model output MI       = {out_mi:.4f} bits")
+
+
+def main():
+    close = download_prices(get_sp500_tickers())
+
+    parts = []
+    for tk in close.columns:
+        c = close[tk].dropna()
+        if len(c) < 300:
+            continue
+        f, fwd = features_and_fwd(c)
+        df = f.copy(); df["_fwd"] = fwd; df["date"] = df.index
+        parts.append(df.dropna())
+    if not parts:
+        raise RuntimeError("No tickers had sufficient price history to build features.")
+    big = pd.concat(parts, ignore_index=True)
+
+    if len(big) > SUBSAMPLE:
+        big = big.sample(SUBSAMPLE, random_state=0)
+    names = [c for c in big.columns if c not in ("_fwd", "date")]
+    X = big[names].values.astype(float)
+    dates = big["date"].values
+
+    y_abs = (big["_fwd"] > 0).astype(float).values
+    med = big.groupby("date")["_fwd"].transform("median")
+    y_cs = (big["_fwd"] > med).astype(float).values
+
+    print(f"\nrows: {len(big):,}   features: {len(names)}")
+    probe(X, y_abs, dates, "ABSOLUTE direction  y = 1[C_t+1 > C_t]")
+    probe(X, y_cs, dates, "CROSS-SECTIONAL     y = 1[fwd_ret > date median]")
+
+
+if __name__ == "__main__":
+    main()

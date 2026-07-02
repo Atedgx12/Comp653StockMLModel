@@ -240,7 +240,6 @@ def build_course_features(close: pd.Series, min_len: int = 756) -> pd.DataFrame 
     rows["ma200_ratio"]   = np.where(ma200 > 0, p / ma200 - 1.0, np.nan)
     rows["ma50_200_cross"]= np.where((ma50 > 0) & (ma200 > 0), ma50 / ma200 - 1.0, np.nan)
 
-    ret1  = rows["ret1"]
     ret5  = rows["ret5"]
     ret20 = rows["ret20"]
     rows["ret_accel"] = ret5 - ret20  # short-term momentum acceleration

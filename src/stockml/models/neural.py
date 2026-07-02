@@ -157,7 +157,7 @@ class UnifiedCourseNetwork(BaseModel):
         self._params["b_nb"]    = np.zeros(K)
 
         # Branch C: MLP hidden layers  dp -> h1 -> h2 -> ...
-        sizes = [dp] + list(self.hidden_sizes)
+        sizes = [dp, *list(self.hidden_sizes)]
         for i in range(len(sizes) - 1):
             s = math.sqrt(2.0 / sizes[i])
             self._params[f"Wm{i+1}"] = rng_.standard_normal((sizes[i], sizes[i+1])) * s
@@ -322,8 +322,8 @@ class UnifiedCourseNetwork(BaseModel):
         X_val: np.ndarray | None = None,
         y_val: np.ndarray | None = None,
         feature_names: list[str] | None = None,
-    ) -> "UnifiedCourseNetwork":
-        K = int(len(np.unique(y_train)))
+    ) -> UnifiedCourseNetwork:
+        K = len(np.unique(y_train))
         self._init_weights(X_train.shape[1], K)
         self.loss_history.clear()
         self.val_loss_history.clear()

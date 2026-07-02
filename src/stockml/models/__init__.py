@@ -25,9 +25,7 @@ def build_model(model_cfg: dict, task: str) -> BaseModel:
     family = model_cfg["family"]
     params = dict(model_cfg.get("params", {}))
     if family == "linear":
-        if task == "classification":
-            return LogisticClassifier(**params)
-        return LinearRegressor(**params)
+        return LogisticClassifier(**params) if task == "classification" else LinearRegressor(**params)
     if family == "gbm":
         if task == "classification":
             return LightGBMClassifier(params)
