@@ -78,6 +78,8 @@ def main():
         f, fwd = features_and_fwd(c)
         df = f.copy(); df["_fwd"] = fwd; df["date"] = df.index
         parts.append(df.dropna())
+    if not parts:
+        raise RuntimeError("No tickers had sufficient price history to build features.")
     big = pd.concat(parts, ignore_index=True)
 
     if len(big) > SUBSAMPLE:
