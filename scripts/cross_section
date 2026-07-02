@@ -11,7 +11,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pipeline_course import download_prices, get_sp500_tickers, mutual_information
 
 EPOCHS, LR = 3000, 1e-7
