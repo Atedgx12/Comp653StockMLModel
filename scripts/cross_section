@@ -41,12 +41,32 @@ def features_and_fwd(c):
 def fit_logistic(X, y):
     Xi = np.column_stack((X, np.ones(len(X))))
     beta = np.zeros(Xi.shape[1])
-    for _ in range(EPOCHS):
-        p = 1 / (1 + np.exp(-np.clip(Xi @ beta, -30, 30)))
-        beta = beta - LR * (Xi.T @ (p - y))
-    return lambda Z: 1 / (1 + np.exp(
-        -np.clip(np.column_stack((Z, np.ones(len(Z)))) @ beta, -30, 30)))
 
+    # Keep the existing update scale: the previous implementation used the
+    # summed gradient with a tiny LR, which is equivalent to using the mean
+    # gradient with lr = LR * N.
+    lr = LR * len(X)
+
+    prev_loss = np.inf
+    for epoch in range(EPOCHS):
+        z = np.clip(Xi @ beta, -30, 30)
+        p = 1 / (1 + np.exp(-z))
+
+        grad = (Xi.T @ (p - y)) / len(y)
+        beta = beta - lr * grad
+
+        # Early stop once progress stalls (keeps runtime bounded on large panels).
+        if epoch % 100 == 0:
+            loss = -np.mean(y * np.log(p + 1e-12) + (1 - y) * np.log(1 - p + 1e-12))
+            if prev_loss - loss < 1e-8:
+                break
+            prev_loss = loss
+
+    def predict_proba(Z):
+        Zi = np.column_stack((Z, np.ones(len(Z))))
+        return 1 / (1 + np.exp(-np.clip(Zi @ beta, -30, 30)))
+
+    return predict_proba
 
 def probe(X, y, dates, label):
     u = np.sort(np.unique(dates)); cut = u[int(0.7 * len(u))]
