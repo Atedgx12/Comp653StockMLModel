@@ -414,7 +414,7 @@ class UnifiedCourseNetwork:
                  dropout_rate=0.4, patience=40, val_frac=0.15,
                  use_sent=False, meta_dropout=0.2,
                  grad_clip=1.0, noise_frac=0.02, warmup_epochs=5,
-                 use_fgsm=False, fgsm_eps=0.01):
+                 use_fgsm=False, fgsm_eps=0.01, pgd_steps=3):
         self.hidden_sizes  = hidden_sizes
         self.lr            = lr
         self.epochs        = epochs
@@ -434,6 +434,7 @@ class UnifiedCourseNetwork:
         self.warmup_epochs = warmup_epochs  # linear LR warmup before cosine decay
         self.use_fgsm      = use_fgsm       # FGSM adversarial perturbation (Module 8)
         self.fgsm_eps      = fgsm_eps       # FGSM epsilon budget
+        self.pgd_steps     = pgd_steps      # PGD inner steps (1 = standard FGSM)
         self.params       = {}
         self.m            = {}   # Adam first moment  (per param)
         self.v            = {}   # Adam second moment (per param)
@@ -735,11 +736,21 @@ class UnifiedCourseNetwork:
                 # The inner maximisation uses the gradient already computed
                 # above so the cost is one extra forward + backward pass.
                 if self.use_fgsm:
-                    dX_full = (np.hstack([dX, np.zeros((len(b), 1))])
-                               if self.use_sent else dX)
-                    X_adv   = X_b + self.fgsm_eps * np.sign(dX_full)
-                    c_adv   = self._forward(X_adv, training=True)
-                    g, _    = self._backward(c_adv, Y_oh)
+                    # PGD: pgd_steps iterations of smaller FGSM steps.
+                    # Each step uses fgsm_eps / pgd_steps so the total
+                    # perturbation budget stays constant regardless of step count.
+                    # More steps produce a tighter adversarial example that sits
+                    # closer to the true worst-case input (Madry et al. 2017).
+                    step = self.fgsm_eps / max(self.pgd_steps, 1)
+                    X_adv = X_b.copy()
+                    for _ in range(self.pgd_steps):
+                        c_tmp   = self._forward(X_adv, training=False)
+                        _, dX_s = self._backward(c_tmp, Y_oh)
+                        dX_full = (np.hstack([dX_s, np.zeros((len(b), 1))])
+                                   if self.use_sent else dX_s)
+                        X_adv   = X_adv + step * np.sign(dX_full)
+                    c_adv = self._forward(X_adv, training=True)
+                    g, _  = self._backward(c_adv, Y_oh)
                 self._update(g, lr_t)
                 ep_loss += loss;  n_b += 1
             avg = ep_loss / n_b
@@ -1482,7 +1493,7 @@ if __name__ == "__main__":
          "dropout_rate": 0.4, "meta_dropout": 0.2, "val_frac": 0.15,
          "verbose": 0, "use_sent": has_sent,
          "grad_clip": 1.0, "noise_frac": 0.02, "warmup_epochs": 5,
-         "use_fgsm": True, "fgsm_eps": 0.01},
+         "use_fgsm": True, "fgsm_eps": 0.01, "pgd_steps": 3},
         "UnifiedCourseNetwork (LR+NB+MLP+Sent branches, Adam)" if has_sent
         else "UnifiedCourseNetwork (LR+NB+MLP branches, Adam)",
         n_splits=3)
@@ -1495,12 +1506,12 @@ if __name__ == "__main__":
     print("\n[5] Full retrain — UnifiedCourseNetwork on entire dataset ...",
           flush=True)
     unified = UnifiedCourseNetwork(
-        hidden_sizes=(256, 128, 64), lr=1e-3, epochs=500,
+        hidden_sizes=(256, 128, 64), lr=1e-3, epochs=1000,
         batch_size=2048, lam=3e-4, beta1=0.9, beta2=0.999,
         dropout_rate=0.4, meta_dropout=0.2, val_frac=0.15, verbose=20,
-        patience=60, use_sent=has_sent,
+        patience=80, use_sent=has_sent,
         grad_clip=1.0, noise_frac=0.02, warmup_epochs=5,
-        use_fgsm=True, fgsm_eps=0.01)
+        use_fgsm=True, fgsm_eps=0.01, pgd_steps=3)
     final_acc, final_auc, mu_f, sd_f = retrain_and_plot(
         X_sel, y_all, dates, selected, unified,
         "UnifiedCourseNetwork_Adam_Sent" if has_sent else "UnifiedCourseNetwork_Adam")
