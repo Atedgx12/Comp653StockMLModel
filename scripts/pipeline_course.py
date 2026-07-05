@@ -412,7 +412,8 @@ class UnifiedCourseNetwork:
                  lam=1e-4, batch_size=2048, beta1=0.9, beta2=0.999,
                  verbose=20, seed=SEED,
                  dropout_rate=0.4, patience=40, val_frac=0.15,
-                 use_sent=False, meta_dropout=0.2):
+                 use_sent=False, meta_dropout=0.2,
+                 grad_clip=1.0, noise_frac=0.05, warmup_epochs=5):
         self.hidden_sizes  = hidden_sizes
         self.lr            = lr
         self.epochs        = epochs
@@ -427,6 +428,9 @@ class UnifiedCourseNetwork:
         self.patience      = patience       # best-checkpoint patience (not stop)
         self.val_frac      = val_frac       # fraction of rows held out for val
         self.use_sent      = use_sent       # Branch D: NLP sentiment branch
+        self.grad_clip     = grad_clip      # global gradient-norm clip threshold
+        self.noise_frac    = noise_frac     # Gaussian augmentation scale (Module 8)
+        self.warmup_epochs = warmup_epochs  # linear LR warmup before cosine decay
         self.params       = {}
         self.m            = {}   # Adam first moment  (per param)
         self.v            = {}   # Adam second moment (per param)
@@ -617,6 +621,15 @@ class UnifiedCourseNetwork:
             v_hat = v_t / (1 - beta2^t)
             theta = theta - lr * m_hat / (sqrt(v_hat) + eps)
         """
+        # Global gradient-norm clip (Pascanu et al. 2013):
+        # financial data heavy tails can produce gradient spikes that send
+        # a weight tensor into a region Adam cannot recover from.
+        if self.grad_clip > 0:
+            total_norm = np.sqrt(sum(np.sum(v ** 2) for v in g.values()))
+            if total_norm > self.grad_clip:
+                scale = self.grad_clip / (total_norm + 1e-8)
+                g = {k: v * scale for k, v in g.items()}
+
         self.t += 1
         eps = 1e-8
         b1c = 1.0 - self.beta1 ** self.t    # bias-correction factor for m
@@ -660,25 +673,47 @@ class UnifiedCourseNetwork:
               f"[meta_dropout={self.meta_dropout}, learned branch weighting]",
               flush=True)
         print(f"      Full schedule: {self.epochs} epochs  "
-              f"val_rows={n_val:,}  cosine LR  best-checkpoint restore",
+              f"val_rows={n_val:,}  warmup={self.warmup_epochs}ep  "
+              f"cosine LR  grad_clip={self.grad_clip}  "
+              f"noise_frac={self.noise_frac}  best-checkpoint restore",
               flush=True)
 
         best_val   = np.inf
         best_params = None
         no_improve  = 0
 
+        # Per-feature noise scale for augmentation (Module 8, Lec 8-3).
+        # Gaussian noise is added to each mini-batch at training time,
+        # scaled to noise_frac * empirical std of each feature column so
+        # the perturbation matches the natural day-to-day variation.
+        noise_scale = (X_tr.std(axis=0) * self.noise_frac
+                       if self.noise_frac > 0 else None)
+
         for epoch in range(self.epochs):
-            # Cosine learning-rate annealing: LR decays smoothly from
-            # self.lr down to self.lr/100 over the full epoch budget.
-            lr_t = self.lr * (0.01 + 0.99 * 0.5 *
-                              (1.0 + np.cos(np.pi * epoch / self.epochs)))
+            # Linear warmup for the first warmup_epochs epochs stabilises
+            # Adam whose moment accumulators are zero-initialised and would
+            # otherwise take an oversized effective step at epoch 0.
+            # After warmup, cosine annealing decays LR from self.lr to
+            # self.lr/100 over the remaining budget.
+            if epoch < self.warmup_epochs:
+                lr_t = self.lr * (epoch + 1) / max(self.warmup_epochs, 1)
+            else:
+                ce   = epoch - self.warmup_epochs
+                ct   = max(self.epochs - self.warmup_epochs, 1)
+                lr_t = self.lr * (0.01 + 0.99 * 0.5 * (1.0 + np.cos(np.pi * ce / ct)))
 
             rng.shuffle(idx_tr)
             ep_loss = 0.0;  n_b = 0
             for s in range(0, len(X_tr), self.batch_size):
                 b    = idx_tr[s:s + self.batch_size]
+                # Gaussian noise augmentation: adds a perturbation drawn
+                # from N(0, noise_scale) to each feature of the batch.
+                # The scale is proportional to each feature's empirical std
+                # so the signal-to-noise ratio is consistent across features.
+                X_b  = (X_tr[b] + rng.standard_normal(X_tr[b].shape) * noise_scale
+                        if noise_scale is not None else X_tr[b])
                 Y_oh = np.eye(K)[y_tr[b].astype(int)]
-                c    = self._forward(X_tr[b], training=True)
+                c    = self._forward(X_b, training=True)
                 loss = cross_entropy_softmax(c['Y_hat'], Y_oh)
                 self._update(self._backward(c, Y_oh), lr_t)
                 ep_loss += loss;  n_b += 1
@@ -1420,7 +1455,8 @@ if __name__ == "__main__":
         {"hidden_sizes": (64, 32), "lr": 0.001, "epochs": 60,
          "batch_size": 1024, "beta1": 0.9, "beta2": 0.999,
          "dropout_rate": 0.4, "meta_dropout": 0.2, "val_frac": 0.15,
-         "verbose": 0, "use_sent": has_sent},
+         "verbose": 0, "use_sent": has_sent,
+         "grad_clip": 1.0, "noise_frac": 0.05, "warmup_epochs": 5},
         "UnifiedCourseNetwork (LR+NB+MLP+Sent branches, Adam)" if has_sent
         else "UnifiedCourseNetwork (LR+NB+MLP branches, Adam)",
         n_splits=3)
@@ -1436,7 +1472,8 @@ if __name__ == "__main__":
         hidden_sizes=(256, 128, 64), lr=1e-3, epochs=500,
         batch_size=2048, lam=3e-4, beta1=0.9, beta2=0.999,
         dropout_rate=0.4, meta_dropout=0.2, val_frac=0.15, verbose=20,
-        patience=40, use_sent=has_sent)
+        patience=40, use_sent=has_sent,
+        grad_clip=1.0, noise_frac=0.05, warmup_epochs=5)
     final_acc, final_auc, mu_f, sd_f = retrain_and_plot(
         X_sel, y_all, dates, selected, unified,
         "UnifiedCourseNetwork_Adam_Sent" if has_sent else "UnifiedCourseNetwork_Adam")
