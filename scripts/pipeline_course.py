@@ -830,29 +830,13 @@ def roc_auc(y_true, y_score):
 
 
 def majority_class_baseline(y_true):
-    """
-    Trivial 'always predict the majority class' reference.
-
-    Reported so the headline accuracy is read against the right yardstick:
-    on an imbalanced label set, a classifier only earns its keep by beating
-    this number.  Accuracy equals the majority-class frequency; AUC is 0.5
-    by construction because a constant prediction cannot rank samples.
-    """
+    """Always-predict-majority reference: accuracy = majority-class rate, AUC = 0.5."""
     p_up = float(np.mean(y_true))
     return max(p_up, 1.0 - p_up), 0.5
 
 
 def paired_bootstrap_auc_diff(y_true, prob_a, prob_b, n_boot=1000, seed=SEED):
-    """
-    Test whether model A's AUC advantage over model B is real or noise.
-
-    Both models are scored on the *same* test rows, so resampling row
-    indices with replacement gives a paired comparison (the resampled fold
-    is identical for both models).  Returns the observed AUC gap
-    (A - B), a 95% bootstrap confidence interval, and a two-sided
-    bootstrap p-value for H0: gap = 0.  A CI that excludes 0 means the
-    win survives sampling variability.
-    """
+    """Paired bootstrap on the A-B AUC gap; returns gap, 95% CI, and p-value for H0: gap=0."""
     rng_b = np.random.default_rng(seed)
     n     = len(y_true)
     obs   = roc_auc(y_true, prob_a) - roc_auc(y_true, prob_b)
@@ -860,13 +844,60 @@ def paired_bootstrap_auc_diff(y_true, prob_a, prob_b, n_boot=1000, seed=SEED):
     for b in range(n_boot):
         idx = rng_b.integers(0, n, n)
         yt  = y_true[idx]
-        if yt.min() == yt.max():          # single-class resample -> AUC undefined
+        if yt.min() == yt.max():
             diffs[b] = 0.0
             continue
         diffs[b] = roc_auc(yt, prob_a[idx]) - roc_auc(yt, prob_b[idx])
     lo, hi = np.percentile(diffs, [2.5, 97.5])
     p_val  = 2.0 * min(float(np.mean(diffs <= 0)), float(np.mean(diffs >= 0)))
     return obs, float(lo), float(hi), min(p_val, 1.0)
+
+
+def make_eda_figures(X, y, feat_names, out_dir=OUT_DIR):
+    """Correlation heatmap, PCA scree, and class-balance figures (report Section 4.2)."""
+    Xs = (X - X.mean(0)) / (X.std(0) + 1e-9)
+
+    corr = np.corrcoef(Xs, rowvar=False)
+    fig, ax = plt.subplots(figsize=(10, 9))
+    im = ax.imshow(corr, cmap="coolwarm", vmin=-1, vmax=1)
+    ax.set_xticks(range(len(feat_names)))
+    ax.set_xticklabels(feat_names, rotation=90, fontsize=7)
+    ax.set_yticks(range(len(feat_names)))
+    ax.set_yticklabels(feat_names, fontsize=7)
+    ax.set_title("Feature Correlation Matrix")
+    fig.colorbar(im, ax=ax, shrink=0.8)
+    plt.tight_layout()
+    fig.savefig(os.path.join(out_dir, "eda_correlation.png"), dpi=150)
+    plt.close(fig)
+
+    eigvals = np.clip(np.linalg.eigvalsh(np.cov(Xs, rowvar=False))[::-1], 0, None)
+    evr     = eigvals / eigvals.sum()
+    comps   = np.arange(1, len(evr) + 1)
+    fig, ax = plt.subplots(figsize=(9, 4))
+    ax.bar(comps, evr, color="steelblue", label="Individual")
+    ax.plot(comps, np.cumsum(evr), "r-o", markersize=3, label="Cumulative")
+    ax.set_xlabel("Principal component")
+    ax.set_ylabel("Explained variance ratio")
+    ax.set_title("PCA Scree — Feature Variance Structure")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    fig.savefig(os.path.join(out_dir, "eda_pca_variance.png"), dpi=150)
+    plt.close(fig)
+
+    n_up, n_down = int((y == 1).sum()), int((y == 0).sum())
+    fig, ax = plt.subplots(figsize=(5, 4))
+    ax.bar(["Down", "Up"], [n_down, n_up], color=["indianred", "seagreen"])
+    ax.set_ylabel("Samples")
+    ax.set_title(f"Class Balance (Up = {n_up / (n_up + n_down):.3f})")
+    for i, v in enumerate([n_down, n_up]):
+        ax.text(i, v, f"{v:,}", ha="center", va="bottom", fontsize=9)
+    plt.tight_layout()
+    fig.savefig(os.path.join(out_dir, "eda_class_balance.png"), dpi=150)
+    plt.close(fig)
+
+    print(f"    Saved eda_correlation.png, eda_pca_variance.png, eda_class_balance.png "
+          f"(Up={n_up:,}  Down={n_down:,})", flush=True)
 
 # ===========================================================================
 # Data: S&P 500 download and feature engineering
@@ -1516,6 +1547,9 @@ if __name__ == "__main__":
         X_sel      = X_sel_price
         sent_label = ""
     print(f"\n    Using {len(selected)} MI-selected price features{sent_label}.")
+
+    print("\n[3b] EDA figures — correlation, PCA, class balance ...", flush=True)
+    make_eda_figures(X_sel, y_all, selected + (["sent_rank"] if has_sent else []))
 
     # --- Walk-forward CV on early 25% of dates (fast sanity check) ---------
     unique_dates = np.sort(np.unique(dates))
