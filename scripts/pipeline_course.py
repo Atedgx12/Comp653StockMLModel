@@ -828,6 +828,46 @@ def roc_auc(y_true, y_score):
     rank_sum = ranks[y_true[order] == 1].sum()
     return (rank_sum - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg)
 
+
+def majority_class_baseline(y_true):
+    """
+    Trivial 'always predict the majority class' reference.
+
+    Reported so the headline accuracy is read against the right yardstick:
+    on an imbalanced label set, a classifier only earns its keep by beating
+    this number.  Accuracy equals the majority-class frequency; AUC is 0.5
+    by construction because a constant prediction cannot rank samples.
+    """
+    p_up = float(np.mean(y_true))
+    return max(p_up, 1.0 - p_up), 0.5
+
+
+def paired_bootstrap_auc_diff(y_true, prob_a, prob_b, n_boot=1000, seed=SEED):
+    """
+    Test whether model A's AUC advantage over model B is real or noise.
+
+    Both models are scored on the *same* test rows, so resampling row
+    indices with replacement gives a paired comparison (the resampled fold
+    is identical for both models).  Returns the observed AUC gap
+    (A - B), a 95% bootstrap confidence interval, and a two-sided
+    bootstrap p-value for H0: gap = 0.  A CI that excludes 0 means the
+    win survives sampling variability.
+    """
+    rng_b = np.random.default_rng(seed)
+    n     = len(y_true)
+    obs   = roc_auc(y_true, prob_a) - roc_auc(y_true, prob_b)
+    diffs = np.empty(n_boot)
+    for b in range(n_boot):
+        idx = rng_b.integers(0, n, n)
+        yt  = y_true[idx]
+        if yt.min() == yt.max():          # single-class resample -> AUC undefined
+            diffs[b] = 0.0
+            continue
+        diffs[b] = roc_auc(yt, prob_a[idx]) - roc_auc(yt, prob_b[idx])
+    lo, hi = np.percentile(diffs, [2.5, 97.5])
+    p_val  = 2.0 * min(float(np.mean(diffs <= 0)), float(np.mean(diffs >= 0)))
+    return obs, float(lo), float(hi), min(p_val, 1.0)
+
 # ===========================================================================
 # Data: S&P 500 download and feature engineering
 # ===========================================================================
@@ -1382,7 +1422,7 @@ def retrain_and_plot(X_np, y_np, dates, feat_names, model, model_name, scale=Tru
                     f"loss_curve_{model_name.replace(' ','_')}.png"), dpi=150)
         print(f"  Saved loss curve.")
 
-    return acc, auc, mu, sd
+    return acc, auc, mu, sd, y_te, prob1
 
 
 # ===========================================================================
@@ -1423,7 +1463,7 @@ def lgbm_baseline(X_np, y_np, dates):
     auc  = roc_auc(y_te, prob)
     print(f"\n  [LightGBM-GPU]  acc={acc:.4f}  auc={auc:.4f}")
     booster.save_model(os.path.join(OUT_DIR, "lgbm_full.txt"))
-    return acc, auc
+    return acc, auc, y_te, prob
 
 # ===========================================================================
 # Main
@@ -1512,7 +1552,7 @@ if __name__ == "__main__":
         patience=80, use_sent=has_sent,
         grad_clip=1.0, noise_frac=0.02, warmup_epochs=5,
         use_fgsm=True, fgsm_eps=0.01, pgd_steps=3)
-    final_acc, final_auc, mu_f, sd_f = retrain_and_plot(
+    final_acc, final_auc, mu_f, sd_f, y_te_u, prob_u = retrain_and_plot(
         X_sel, y_all, dates, selected, unified,
         "UnifiedCourseNetwork_Adam_Sent" if has_sent else "UnifiedCourseNetwork_Adam")
 
@@ -1523,11 +1563,37 @@ if __name__ == "__main__":
     # --- Summary table ------------------------------------------------------
     label = "UnifiedCourseNetwork (LR+NB+MLP+Sent)" if has_sent \
             else "UnifiedCourseNetwork (LR+NB+MLP)"
-    rows = {label: {"acc": final_acc, "auc": final_auc}}
+    maj_acc, maj_auc = majority_class_baseline(y_te_u)
+    rows = {
+        label: {"acc": final_acc, "auc": final_auc},
+        "MajorityClass (always-up)": {"acc": maj_acc, "auc": maj_auc},
+    }
     if lgbm_res:
         rows["LightGBM-GPU (baseline)"] = {"acc": lgbm_res[0], "auc": lgbm_res[1]}
     df_summary = pd.DataFrame(rows).T
     print("\n=== Final Model Comparison ===")
     print(df_summary.to_string())
     df_summary.to_csv(os.path.join(OUT_DIR, "final_results_unified.csv"))
+
+    # --- Statistical significance of the UCN vs LightGBM AUC gap ------------
+    print("\n[7] Significance test — paired bootstrap on the AUC gap ...",
+          flush=True)
+    print(f"    Test-set class balance: Up={float(np.mean(y_te_u)):.4f}  "
+          f"majority-class accuracy={maj_acc:.4f}", flush=True)
+    if lgbm_res:
+        obs, lo, hi, p_val = paired_bootstrap_auc_diff(y_te_u, prob_u, lgbm_res[3])
+        verdict = "significant (CI excludes 0)" if lo > 0 or hi < 0 \
+                  else "not significant (CI includes 0)"
+        print(f"    UCN - LightGBM AUC gap = {obs:+.4f}  "
+              f"95% CI [{lo:+.4f}, {hi:+.4f}]  p={p_val:.3f}  -> {verdict}",
+              flush=True)
+        pd.DataFrame([{
+            "auc_gap_ucn_minus_lgbm": obs, "ci_low": lo, "ci_high": hi,
+            "bootstrap_p_value": p_val, "majority_class_acc": maj_acc,
+            "test_up_frac": float(np.mean(y_te_u)),
+        }]).to_csv(os.path.join(OUT_DIR, "significance_test.csv"), index=False)
+        print("    Saved significance_test.csv")
+    else:
+        print("    LightGBM unavailable — skipping paired test.", flush=True)
+
     print("\nAll done. Artifacts saved to", OUT_DIR)
