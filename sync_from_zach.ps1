@@ -16,13 +16,15 @@ scp "${remote}:${src}/pipeline_course.py" "$repo/scripts/pipeline_course.py"
 
 Write-Host "Pulling outputs from $remote ..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Force "$repo/outputs" | Out-Null
-scp "${remote}:${src}/*.png" "$repo/outputs/"
-scp "${remote}:${src}/*.csv" "$repo/outputs/"
-scp "${remote}:${src}/run_log.txt" "$repo/outputs/"
+New-Item -ItemType Directory -Force "$repo/models"  | Out-Null
+scp "${remote}:${src}/*.png"         "$repo/outputs/"
+scp "${remote}:${src}/*.csv"         "$repo/outputs/"
+scp "${remote}:${src}/run_log.txt"   "$repo/outputs/"
+scp "${remote}:${src}/lgbm_full.txt" "$repo/models/lgbm_full.txt"
 
 Write-Host "Committing and pushing ..." -ForegroundColor Cyan
 Set-Location $repo
-git add scripts/ outputs/
+git add scripts/ outputs/ models/
 git status --short
 git commit -m $Message
 git push origin main

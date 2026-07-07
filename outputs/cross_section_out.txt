@@ -1,0 +1,22 @@
+[1] Fetching ticker universe ...
+    Wikipedia failed (HTTP Error 403: Forbidden). Using hardcoded 500-ticker universe.
+[2] Loading cached price data ...
+    420 tickers x 2066 days.
+
+rows: 120,000   features: 9
+
+  ABSOLUTE direction  y = 1[C_t+1 > C_t]
+    base rate (up)        = 0.5200
+    logistic accuracy     = 0.5199
+    trivial baseline      = 0.5200   (accuracy must beat THIS)
+    accuracy - baseline   = -0.0001
+    best input feature MI = 0.0005 bits
+    model output MI       = 0.0004 bits
+
+  CROSS-SECTIONAL     y = 1[fwd_ret > date median]
+    base rate (up)        = 0.4956
+    logistic accuracy     = 0.5089
+    trivial baseline      = 0.5044   (accuracy must beat THIS)
+    accuracy - baseline   = +0.0046
+    best input feature MI = 0.0008 bits
+    model output MI       = 0.0003 bits
