@@ -1493,7 +1493,7 @@ if __name__ == "__main__":
          "dropout_rate": 0.4, "meta_dropout": 0.2, "val_frac": 0.15,
          "verbose": 0, "use_sent": has_sent,
          "grad_clip": 1.0, "noise_frac": 0.02, "warmup_epochs": 5,
-         "use_fgsm": True, "fgsm_eps": 0.01, "pgd_steps": 3},
+         "use_fgsm": True, "fgsm_eps": 0.01, "pgd_steps": 5},
         "UnifiedCourseNetwork (LR+NB+MLP+Sent branches, Adam)" if has_sent
         else "UnifiedCourseNetwork (LR+NB+MLP branches, Adam)",
         n_splits=3)
@@ -1506,12 +1506,12 @@ if __name__ == "__main__":
     print("\n[5] Full retrain — UnifiedCourseNetwork on entire dataset ...",
           flush=True)
     unified = UnifiedCourseNetwork(
-        hidden_sizes=(256, 128, 64), lr=1e-3, epochs=1000,
+        hidden_sizes=(256, 128, 64), lr=1e-3, epochs=3000,
         batch_size=2048, lam=3e-4, beta1=0.9, beta2=0.999,
         dropout_rate=0.4, meta_dropout=0.2, val_frac=0.15, verbose=20,
-        patience=80, use_sent=has_sent,
+        patience=150, use_sent=has_sent,
         grad_clip=1.0, noise_frac=0.02, warmup_epochs=5,
-        use_fgsm=True, fgsm_eps=0.01, pgd_steps=3)
+        use_fgsm=True, fgsm_eps=0.01, pgd_steps=5)
     final_acc, final_auc, mu_f, sd_f = retrain_and_plot(
         X_sel, y_all, dates, selected, unified,
         "UnifiedCourseNetwork_Adam_Sent" if has_sent else "UnifiedCourseNetwork_Adam")
