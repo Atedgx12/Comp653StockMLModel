@@ -85,6 +85,8 @@ def parse_args():
                    help="Epochs per cosine cycle when warm restarts are on.")
     p.add_argument("--no-context", action="store_true",
                    help="Disable the cross sectional context branch.")
+    p.add_argument("--no-decision", action="store_true",
+                   help="Disable the decision layer and per-ticker ledger.")
     p.add_argument("--emit-json", default=None,
                    help="Write the per-horizon results to this JSON path.")
     return p.parse_args()
@@ -321,6 +323,39 @@ def run(args):
     ascii_bars([f"{w}m" for w in WINDOWS_MIN], aucs,
                "[Graph] Intraday per-horizon test AUC (1m to 240m):")
     _report_bands(WINDOWS_MIN, bands, Rte, "m")
+
+    # Decision layer: score the intraday test bands into the same per-ticker
+    # ledger, so both scales feed one honing loop.
+    if not getattr(args, "no_decision", False):
+        try:
+            from ucn.models.decision import (choose_batch, score_batch,
+                                              TickerLedger)
+            tk_te = tk_arr[te]
+            time_te = pd.to_datetime(times[te])
+            p0 = np.array([close[tk].get(pd.Timestamp(tm), np.nan)
+                           for tk, tm in zip(tk_te, time_te)], dtype=float)
+            rows = []
+            for b, w in enumerate(WINDOWS_MIN):
+                ch = choose_batch(bands[:, b, :], p0)
+                ch = score_batch(ch, p0 * np.exp(Rte[:, b]))
+                ch["ticker"] = tk_te; ch["date"] = time_te
+                ch["horizon"] = f"{w}m"; ch["source"] = "auto"
+                rows.append(ch)
+            batch = pd.concat(rows, ignore_index=True).dropna(
+                subset=["p0", "actual"])
+            ledger_path = os.path.join(OUT_DIR, "ticker_ledger.parquet")
+            ledger = TickerLedger(ledger_path)
+            ledger.append(batch)
+            ledger.df = ledger.df.drop_duplicates(
+                subset=["ticker", "date", "horizon", "source"], keep="last")
+            ledger.save()
+            cov = float(pd.to_numeric(batch["in_band"], errors="coerce").mean())
+            mpe = float(batch["pct_error"].abs().mean())
+            print(f"\n[Decision] scored {len(batch):,} intraday choices  "
+                  f"in-band={cov:.3f}  mean abs pct error={mpe:.4f}  "
+                  f"ledger now {len(ledger.df):,} rows", flush=True)
+        except Exception as e:
+            print(f"[Decision] intraday skipped: {e}", flush=True)
 
     save_path = os.path.join(OUT_DIR, f"multiscale_intraday_{args.interval}.npz")
     net.save(save_path)

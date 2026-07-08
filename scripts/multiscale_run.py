@@ -456,7 +456,7 @@ def run(args):
                 ch = choose_batch(bands[:, b, :], p0)
                 ch = score_batch(ch, p0 * np.exp(Rte[:, b]))
                 ch["ticker"] = tk_te; ch["date"] = date_te
-                ch["horizon"] = w; ch["source"] = "auto"
+                ch["horizon"] = f"{w}d"; ch["source"] = "auto"
                 rows.append(ch)
             batch = pd.concat(rows, ignore_index=True).dropna(
                 subset=["p0", "actual"])
