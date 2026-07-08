@@ -39,6 +39,30 @@ def ascii_bars(labels, values, title, width=46, fmt="{:.4f}"):
         print(f"  {str(lab):>6} | {bar:<{width}} {fmt.format(v)}", flush=True)
 
 
+def selective_accuracy(P, Y, labels, unit):
+    """Keep the median-split ranking model and add its accuracy on the most
+    confident predictions. Full coverage is the model we already have; the
+    small confident slice is the clear high versus clear low decision and
+    reaches the high accuracy the median split caps, with no retraining and no
+    data dropped.
+    """
+    import numpy as _np
+    covs = [1.0, 0.5, 0.3, 0.1, 0.05]
+    print("\n[Selective] Accuracy at confidence coverage "
+          "(keep-all model + confident slice):")
+    print("  horizon " + "".join(f"  cov{int(c*100):>3}%" for c in covs))
+    for b, w in enumerate(labels):
+        p = P[:, b]; y = Y[:, b]
+        order = _np.argsort(-_np.abs(p - 0.5))
+        row = f"  {str(w)+unit:>7}"
+        for c in covs:
+            k = max(1, int(c * len(order)))
+            idx = order[:k]
+            acc = float(((p[idx] >= 0.5) == (y[idx] >= 0.5)).mean())
+            row += f"   {acc:6.3f}"
+        print(row, flush=True)
+
+
 def _report_bands(labels, bands, Rte, unit, quantiles=(0.05, 0.25, 0.50, 0.75, 0.95)):
     """Report calibrated quantile band coverage and an example price cone."""
     import numpy as _np
@@ -466,6 +490,7 @@ def run(args):
                "[Graph] Per-horizon test AUC across 1/5/10/30/90/180 days:")
     curv = float(np.mean((P[:, 2:] - 2*P[:, 1:-1] + P[:, :-2])**2))
     print(f"\n  Term-structure curvature on test: {curv:.5f}")
+    selective_accuracy(P, Yte, windows, "d")
     _report_bands(windows, bands, Rte, "d")
 
     # Decision layer: turn the calibrated test bands into choices, score them

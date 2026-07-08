@@ -332,6 +332,8 @@ def run(args):
         print(f"  {w:>4}m   AUC={a:.4f}")
     ascii_bars([f"{w}m" for w in WINDOWS_MIN], aucs,
                "[Graph] Intraday per-horizon test AUC (1m to 240m):")
+    from multiscale_run import selective_accuracy
+    selective_accuracy(P, Yte, WINDOWS_MIN, "m")
     _report_bands(WINDOWS_MIN, bands, Rte, "m")
 
     # Decision layer: score the intraday test bands into the same per-ticker
