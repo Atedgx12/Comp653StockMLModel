@@ -12,8 +12,9 @@ Key additions over the monolithic pipeline_course.py version:
         ucn.fit(X_new, y_new)                    # only update MLP + meta
 """
 import math
-import numpy as np
+import numpy as _np
 from typing import Optional
+from ..backend import xp as np, to_device, to_cpu, new_rng
 from ..config import UCNConfig
 from ..utils import sigmoid, softmax, cross_entropy_softmax
 from ..training.metrics import accuracy
@@ -42,7 +43,10 @@ class UnifiedCourseNetwork:
         self.loss_history  = []
         self.val_loss_history = []
         self._frozen: set  = set(self.cfg.frozen_branches)
-        self._rng = np.random.default_rng(self.cfg.seed)
+        self._rng = new_rng(self.cfg.seed)
+        # A CPU generator used only to shuffle the batch index order, because
+        # the CuPy generator does not implement permutation.
+        self._idx_rng = _np.random.default_rng(self.cfg.seed)
 
     # ── Branch freeze / unfreeze ─────────────────────────────────────────
 
@@ -64,7 +68,7 @@ class UnifiedCourseNetwork:
 
     def _init_weights(self, d: int, K: int):
         cfg  = self.cfg
-        rng  = np.random.default_rng(cfg.seed)
+        rng  = new_rng(cfg.seed)
         self.n_classes = K
         dp   = d - 1 if cfg.use_sent else d
 
@@ -345,7 +349,12 @@ class UnifiedCourseNetwork:
             seqs: np.ndarray = None) -> "UnifiedCourseNetwork":
         """seqs : (N, T, d) optional LSTM sequence input aligned with X."""
         cfg = self.cfg
-        K   = len(np.unique(y))
+        # Move all inputs onto the compute device once, so every matmul below
+        # runs on the GPU when the CuPy backend is active.
+        X = to_device(X); y = to_device(y)
+        seqs = to_device(seqs)
+        sample_weights = to_device(sample_weights)
+        K   = int(len(np.unique(y)))
         if not self.params:
             self._init_weights(X.shape[1], K)
 
@@ -358,7 +367,7 @@ class UnifiedCourseNetwork:
         # Slice sequence tensor to match training split
         seqs_tr  = seqs[:len(X)-n_val]  if seqs  is not None else None
         seqs_val = seqs[len(X)-n_val:]  if seqs  is not None else None
-        idx_tr = np.arange(len(X_tr))
+        idx_tr = _np.arange(len(X_tr))
 
         noise_scale = (X_tr.std(axis=0) * cfg.noise_frac
                        if cfg.noise_frac > 0 else None)
@@ -381,11 +390,11 @@ class UnifiedCourseNetwork:
                 ct   = max(cfg.epochs - cfg.warmup_epochs, 1)
                 lr_t = cfg.lr * (0.01 + 0.99 * 0.5 * (1.0 + np.cos(np.pi * ce / ct)))
 
-            self._rng.shuffle(idx_tr)
+            self._idx_rng.shuffle(idx_tr)
             ep_loss = 0.0; n_b = 0
 
             for s in range(0, len(X_tr), cfg.batch_size):
-                b    = idx_tr[s:s + cfg.batch_size]
+                b    = to_device(idx_tr[s:s + cfg.batch_size])
                 X_b  = (X_tr[b] + self._rng.standard_normal(X_tr[b].shape) * noise_scale
                         if noise_scale is not None else X_tr[b])
                 s_b  = seqs_tr[b] if seqs_tr is not None else None
@@ -415,14 +424,15 @@ class UnifiedCourseNetwork:
                 loss = cross_entropy_softmax(
                     self._forward(X_b, training=False, seqs=s_b)['Y_hat'], Y_oh)
                 self._update(g, lr_t)
-                ep_loss += loss; n_b += 1
+                ep_loss += float(loss); n_b += 1
 
             self.loss_history.append(ep_loss / n_b)
 
             Y_oh_val     = np.eye(K)[y_val.astype(int)]
             c_val        = self._forward(X_val, training=False, seqs=seqs_val)
-            val_ce       = cross_entropy_softmax(c_val['Y_hat'], Y_oh_val)
-            val_acc_curr = accuracy(y_val, np.argmax(c_val['Y_hat'], axis=1))
+            val_ce       = float(cross_entropy_softmax(c_val['Y_hat'], Y_oh_val))
+            val_acc_curr = accuracy(to_cpu(y_val),
+                                    _np.argmax(to_cpu(c_val['Y_hat']), axis=1))
             self.val_loss_history.append(val_ce)
 
             # Early stopping tracks val_acc (not val_CE).
@@ -437,7 +447,7 @@ class UnifiedCourseNetwork:
                 no_improve += 1
 
             if cfg.verbose and (epoch + 1) % cfg.verbose == 0:
-                acc_tr  = accuracy(y_tr, self.predict(X_tr, seqs=seqs_tr))
+                acc_tr  = accuracy(to_cpu(y_tr), self.predict(X_tr, seqs=seqs_tr))
                 marker  = " *" if no_improve == 0 else ""
                 print(f"  Epoch {epoch+1:4d}/{cfg.epochs}  "
                       f"CE={ep_loss/n_b:.5f}  acc={acc_tr:.4f}  "
@@ -458,23 +468,26 @@ class UnifiedCourseNetwork:
 
     def predict_proba(self, X: np.ndarray,
                       seqs: np.ndarray = None) -> np.ndarray:
-        return self._forward(X, training=False, seqs=seqs)['Y_hat']
+        out = self._forward(to_device(X), training=False,
+                            seqs=to_device(seqs))['Y_hat']
+        return to_cpu(out)
 
     def predict(self, X: np.ndarray,
                 seqs: np.ndarray = None) -> np.ndarray:
-        return np.argmax(self.predict_proba(X, seqs=seqs), axis=1)
+        return _np.argmax(self.predict_proba(X, seqs=seqs), axis=1)
 
     # ── Checkpoint persistence ───────────────────────────────────────────
 
     def save_checkpoint(self, path: str):
         """Save trained weights to a .npz file."""
-        np.savez_compressed(path, **self.params)
+        _np.savez_compressed(path, **{k: to_cpu(v)
+                                      for k, v in self.params.items()})
         print(f"Checkpoint saved: {path}")
 
     def load_checkpoint(self, path: str):
         """Load weights from a .npz file into this model."""
-        data = np.load(path)
-        self.params = {k: data[k] for k in data.files}
+        data = _np.load(path)
+        self.params = {k: to_device(data[k]) for k in data.files}
         self.m = {k: np.zeros_like(v) for k, v in self.params.items()}
         self.v = {k: np.zeros_like(v) for k, v in self.params.items()}
         self.t = 0
