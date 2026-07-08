@@ -290,13 +290,17 @@ def purged_cpcv(X: np.ndarray, y: np.ndarray, dates: np.ndarray,
 # ── LightGBM baseline ─────────────────────────────────────────────────────
 
 def lgbm_baseline(X: np.ndarray, y: np.ndarray,
-                  dates: np.ndarray) -> tuple:
+                  dates: np.ndarray, purge: int = 1) -> tuple:
     if not HAS_LGB:
         print("LightGBM not installed — skipping baseline.")
         return None
     unique_dates = np.sort(np.unique(dates))
-    split_dt     = unique_dates[int(0.80 * len(unique_dates))]
-    tr_m = dates < split_dt; te_m = dates >= split_dt
+    split_idx    = int(0.80 * len(unique_dates))
+    split_dt     = unique_dates[split_idx]
+    # Same purge gap as the UCN split so the baseline is judged on equally
+    # clean, leakage free test data.
+    purge_dt     = unique_dates[max(0, split_idx - purge)]
+    tr_m = dates < purge_dt; te_m = dates >= split_dt
     X_tr, X_te = X[tr_m], X[te_m]; y_tr, y_te = y[tr_m], y[te_m]
     mu = X_tr.mean(0); sd = X_tr.std(0) + 1e-9
     X_tr_s = (X_tr-mu)/sd; X_te_s = (X_te-mu)/sd
@@ -508,6 +512,11 @@ def main():
     # 5c. Walk-forward CV — recompute unique_dates after any LSTM alignment
     unique_dates = np.sort(np.unique(dates))   # re-derived from current dates
 
+    # The label looks horizon trading days ahead, but everything downstream
+    # runs on stride subsampled dates, so a purge must be expressed in kept
+    # date positions.  Rounding up guarantees the whole label window is removed.
+    purge_positions = int(np.ceil(args.horizon / max(args.stride, 1)))
+
     if args.skip_cv:
         print("\n--skip-cv flag set. Jumping to full retrain.", flush=True)
     else:
@@ -515,11 +524,6 @@ def main():
         sub_m  = dates <= cut
         w_sub  = sample_weights[sub_m] if sample_weights is not None else None
         seqs_sub = seqs_all[sub_m] if seqs_all is not None else None
-
-        # The label looks horizon trading days ahead, but the CV runs on
-        # stride subsampled dates, so the purge must be expressed in kept date
-        # positions.  Rounding up guarantees the whole label window is removed.
-        purge_positions = int(np.ceil(args.horizon / max(args.stride, 1)))
 
         if args.use_cpcv:
             print(f"\n[CV] Combinatorial purged CV on {sub_m.sum():,} rows "
@@ -550,10 +554,17 @@ def main():
             print("--cv-only flag set. Stopping after CV.")
             return
 
-    # 6. Full retrain — 80/20 temporal split
+    # 6. Full retrain — temporal split with a purge gap so the training
+    # labels cannot reach across the boundary into the test period.
     print("\n[Train] Full retrain on entire dataset ...", flush=True)
-    split_dt = unique_dates[int(0.80 * len(unique_dates))]
-    tr_m     = dates < split_dt; te_m = dates >= split_dt
+    split_idx = int(0.80 * len(unique_dates))
+    split_dt  = unique_dates[split_idx]
+    # Purge the training tail: drop training rows whose forward return label
+    # window overlaps the test period.  Without this the last horizon days of
+    # training leak into the test AUC, which is why an unpurged split reported
+    # optimistic numbers that disagreed with the purged CPCV estimate.
+    purge_dt  = unique_dates[max(0, split_idx - purge_positions)]
+    tr_m     = dates < purge_dt; te_m = dates >= split_dt
     X_tr, X_te = X_sel[tr_m], X_sel[te_m]
     y_tr, y_te = y_all[tr_m], y_all[te_m]
     mu = X_tr.mean(0); sd = X_tr.std(0) + 1e-9
@@ -589,7 +600,7 @@ def main():
 
     # 7. LightGBM baseline
     print("\n[Baseline] LightGBM-GPU ...", flush=True)
-    lgb_res = lgbm_baseline(X_sel, y_all, dates)
+    lgb_res = lgbm_baseline(X_sel, y_all, dates, purge=purge_positions)
 
     # 8. Summary
     rows = {"UnifiedCourseNetwork (PGD)": {"acc": acc, "auc": auc}}
