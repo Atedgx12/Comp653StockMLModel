@@ -748,6 +748,14 @@ def main():
 
     # Save checkpoint for fine-tuning
     ucn.save_checkpoint(os.path.join(OUT_DIR, "ucn_weights.npz"))
+    # Persist the feature scaler and the selected feature list so the saved
+    # model can be reapplied to fresh data and combined in an ensemble.
+    np.savez(os.path.join(OUT_DIR, "ucn_scaler.npz"),
+             mu=mu, sd=sd,
+             selected=np.asarray(selected, dtype=object),
+             has_sent=np.asarray(bool(has_sent)),
+             horizon=np.asarray(int(args.horizon)),
+             target=np.asarray(str(args.target)))
     ucn.branch_summary()
 
     # Report the learned per-layer hierarchy gate values (trained by backprop).

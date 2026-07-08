@@ -26,8 +26,18 @@ from ucn.models.multiscale import MultiScaleTermStructureNet
 from ucn.training.metrics import roc_auc
 
 OUT_DIR = os.environ.get("UCN_OUT", ROOT)
-WINDOWS_MIN = [1, 5, 15, 30, 60, 240]   # horizons in minutes
+WINDOWS_MIN = [5, 15, 30, 60, 120, 240]   # horizons in minutes
 T_MAX = 20
+
+
+def _interval_minutes(interval):
+    """Minutes per bar for a yfinance interval string like '5m' or '1h'."""
+    s = str(interval).strip().lower()
+    if s.endswith("m"):
+        return int(s[:-1])
+    if s.endswith("h"):
+        return int(s[:-1]) * 60
+    raise ValueError(f"unsupported intraday interval: {interval}")
 
 
 def ascii_bars(labels, values, title, width=46, fmt="{:.4f}"):
@@ -40,30 +50,63 @@ def ascii_bars(labels, values, title, width=46, fmt="{:.4f}"):
         print(f"  {str(lab):>6} | {'#' * n:<{width}} {fmt.format(v)}", flush=True)
 
 
+def _report_bands(labels, bands, Rte, unit, quantiles=(0.05, 0.25, 0.50, 0.75, 0.95)):
+    """Report calibrated quantile band coverage and an example price cone."""
+    lo = bands[:, :, 0]; hi = bands[:, :, -1]
+    cover = ((Rte >= lo) & (Rte <= hi)).mean(axis=0)
+    ascii_bars([f"{w}{unit}" for w in labels], [float(c) for c in cover],
+               "[Bands] Calibrated 90% band coverage by horizon (target 0.90):",
+               fmt="{:.3f}")
+    print("\n[Bands] Example price cone for a $100 stock (last horizon), "
+          "average over test:")
+    avg = bands.mean(axis=0)
+    b = len(labels) - 1
+    for tau, qq in zip(quantiles, avg[b]):
+        print(f"    {int(tau*100):>3}th pct:  ${100.0 * float(np.exp(qq)):.2f}",
+              flush=True)
+
+
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--n-tickers", type=int, default=60,
-                   help="Number of liquid names to pull minute bars for.")
+                   help="Number of liquid names to pull intraday bars for.")
+    p.add_argument("--interval", default="5m",
+                   help="Bar interval, e.g. 1m, 5m, 15m, 30m, 60m, 1h.")
+    p.add_argument("--period", default="60d",
+                   help="History window yfinance should pull for the interval.")
     p.add_argument("--stride-min", type=int, default=5,
                    help="Sample every this many minutes to reduce overlap.")
     p.add_argument("--smooth-lambda", type=float, default=0.3)
     p.add_argument("--epochs", type=int, default=1500)
     p.add_argument("--cv-frac", type=float, default=0.80)
+    p.add_argument("--emit-json", default=None,
+                   help="Write the per-horizon results to this JSON path.")
     return p.parse_args()
 
 
-def download_minute(tickers, cache):
-    if os.path.exists(cache):
-        print("Loading cached minute bars ...", flush=True)
-        return pd.read_parquet(cache)
-    print(f"Downloading 1m bars for {len(tickers)} tickers ...", flush=True)
-    raw = yf.download(tickers, period="7d", interval="1m",
+def download_bars(tickers, cache_prefix, interval="5m", period="60d"):
+    """Fetch intraday close, volume, high and low panels for richer features."""
+    fields = ["Close", "Volume", "High", "Low"]
+    caches = {f: f"{cache_prefix}_{f.lower()}.parquet" for f in fields}
+    if all(os.path.exists(p) for p in caches.values()):
+        print("Loading cached intraday bars ...", flush=True)
+        return {f: pd.read_parquet(p) for f, p in caches.items()}
+    print(f"Downloading {interval} bars ({period}) for {len(tickers)} "
+          "tickers ...", flush=True)
+    raw = yf.download(tickers, period=period, interval=interval,
                       auto_adjust=True, progress=False, threads=True)
-    close = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw
-    close = close.dropna(axis=1, how="all")
-    close.to_parquet(cache)
-    print(f"  {close.shape[1]} tickers x {close.shape[0]} minute bars", flush=True)
-    return close
+    out = {}
+    for f in fields:
+        if isinstance(raw.columns, pd.MultiIndex):
+            df = raw[f]
+        else:
+            df = raw[[f]] if f in getattr(raw, "columns", []) else raw
+        df = df.dropna(axis=1, how="all")
+        df.to_parquet(caches[f])
+        out[f] = df
+    print(f"  {out['Close'].shape[1]} tickers x {out['Close'].shape[0]} bars",
+          flush=True)
+    return out
 
 
 def within_day_fwd_vol(r1, day_id, h):
@@ -80,33 +123,78 @@ def within_day_fwd_vol(r1, day_id, h):
     return fwd
 
 
+def within_day_fwd_return(close_t, day_id, h):
+    """Forward log return over the next h minutes, within the same day."""
+    fwd = np.log(close_t.shift(-h) / close_t)
+    end_day = pd.Series(day_id, index=close_t.index).shift(-h)
+    fwd[end_day.values != day_id] = np.nan
+    return fwd
+
+
 def run(args):
     """Run the intraday model and return per-horizon results."""
+    bar_min = _interval_minutes(args.interval)
+    def _bars(w):
+        return max(1, int(round(w / bar_min)))
+    H_BARS = [_bars(w) for w in WINDOWS_MIN]
+    stride_bars = max(1, int(round(args.stride_min / bar_min)))
     print("=" * 65)
-    print(" Intraday Volatility Term Structure (1m to 240m horizons)")
+    print(f" Intraday Volatility Term Structure ({WINDOWS_MIN[0]}m to "
+          f"{WINDOWS_MIN[-1]}m horizons, {args.interval} bars)")
     print("=" * 65, flush=True)
     tickers = get_tickers()[:args.n_tickers]
-    close = download_minute(tickers, os.path.join(OUT_DIR, "minute_close.parquet"))
+    cache_prefix = os.path.join(OUT_DIR, f"intraday_{args.interval}")
+    fields = download_bars(tickers, cache_prefix, args.interval, args.period)
+    close = fields["Close"]; volume = fields["Volume"]
+    high = fields["High"]; low = fields["Low"]
     tickers = close.columns.tolist()
 
     # Build per-ticker minute panels with day ids and seq features.
     day_seq = {}
     labels_rows = []
+    eps = 1e-9
     for t in tickers:
         c = close[t].dropna()
         if len(c) < 400:
             continue
+        idx = c.index
+        v = volume[t].reindex(idx) if t in volume.columns else pd.Series(0.0, index=idx)
+        hi = high[t].reindex(idx) if t in high.columns else c
+        lo = low[t].reindex(idx) if t in low.columns else c
         r1 = np.log(c / c.shift(1)).fillna(0.0)
         day_id = c.index.normalize().view("int64")
+        day_series = pd.Series(day_id, index=idx)
+        # Position of each bar within its trading day, normalized to [0, 1],
+        # so the model can learn the U-shaped intraday volatility curve.
+        pos_in_day = day_series.groupby(day_series).cumcount().values.astype(float)
+        bars_per_day = float(np.median(day_series.value_counts().values)) or 1.0
+        tod = pos_in_day / bars_per_day
+        # The overnight gap only lives on the first bar of each day.
+        gap = np.where(pos_in_day == 0, r1.values, 0.0)
+        # Parkinson high-low range is a strong single-bar volatility proxy.
+        rng = np.log((hi / lo).clip(lower=1.0 + eps)).fillna(0.0)
+        # Relative volume against a trailing median, robust to level shifts.
+        vmed = v.rolling(20, min_periods=5).median()
+        vrel = np.log1p((v / (vmed + eps)).clip(lower=0.0)).fillna(0.0)
+        signed_vol = (np.sign(r1) * vrel).fillna(0.0)
         seq = pd.DataFrame({
             "r1": r1, "absr": r1.abs(),
             "rvol5": r1.rolling(5).std().fillna(0.0),
             "rvol15": r1.rolling(15).std().fillna(0.0),
+            "rvol30": r1.rolling(30).std().fillna(0.0),
+            "rng": rng,
+            "vrel": vrel,
+            "signed_vol": signed_vol,
+            "mom5": r1.rolling(5).sum().fillna(0.0),
+            "accel": (r1 - r1.shift(1)).fillna(0.0),
+            "tod": pd.Series(tod, index=idx),
+            "gap": pd.Series(gap, index=idx),
         }).fillna(0.0)
         day_seq[t] = (seq, c.index, day_id)
         d = {"time": c.index, "ticker": t}
-        for h in WINDOWS_MIN:
-            d[f"h{h}"] = within_day_fwd_vol(r1, day_id, h).values
+        for w, hb in zip(WINDOWS_MIN, H_BARS):
+            d[f"h{w}"] = within_day_fwd_vol(r1, day_id, hb).values
+            d[f"r{w}"] = within_day_fwd_return(c, day_id, hb).values
         labels_rows.append(pd.DataFrame(d))
 
     allf = pd.concat(labels_rows, ignore_index=True)
@@ -120,35 +208,40 @@ def run(args):
                fmt="{:.6f}")
 
     # Target grid: every stride-min minute per ticker.
-    steps = [min(w, T_MAX) for w in WINDOWS_MIN]
+    steps = [min(hb, T_MAX) for hb in H_BARS]
     seqs = {b: [] for b in range(len(WINDOWS_MIN))}
     Yrows = []
+    Rrows = []
     times = []
-    print("[Sequences] Building six minute-window branches ...", flush=True)
-    # Prebuild an O(1) label lookup keyed by (ticker, time).
+    print("[Sequences] Building six bar-window branches ...", flush=True)
+    # Prebuild an O(1) label lookup keyed by (ticker, time) holding both the
+    # volatility labels and the forward returns for the quantile bands.
     ycols = [f"y{h}" for h in WINDOWS_MIN]
+    rcols = [f"r{h}" for h in WINDOWS_MIN]
+    nh = len(WINDOWS_MIN)
     ymap = {}
-    for row in allf[["ticker", "time"] + ycols].itertuples(index=False):
+    for row in allf[["ticker", "time"] + ycols + rcols].itertuples(index=False):
         ymap[(row[0], row[1])] = row[2:]
     for t in tickers:
         if t not in day_seq:
             continue
         seq, tindex, day_id = day_seq[t]
         arr = seq.values.astype(np.float32)
-        for pos in range(max(WINDOWS_MIN), len(tindex), args.stride_min):
+        for pos in range(max(H_BARS), len(tindex), stride_bars):
             tm = tindex[pos]
-            yv = ymap.get((t, tm))
-            if yv is None:
+            vals = ymap.get((t, tm))
+            if vals is None:
                 continue
-            yv = np.asarray(yv, dtype=float)
-            if np.isnan(yv).any():
+            vals = np.asarray(vals, dtype=float)
+            yv = vals[:nh]; rv = vals[nh:]
+            if np.isnan(yv).any() or np.isnan(rv).any():
                 continue
             # The forward label already stays within the trading day. The
             # lookback window may cross the overnight gap and is padded when
             # short, so no same-day restriction is needed on the history.
             hist = arr[:pos + 1]
-            for b, w in enumerate(WINDOWS_MIN):
-                seg = hist[-w:]
+            for b, hb in enumerate(H_BARS):
+                seg = hist[-hb:]
                 if len(seg) < steps[b]:
                     pad = np.repeat(seg[:1], steps[b]-len(seg), axis=0)
                     seg = np.concatenate([pad, seg], axis=0)
@@ -157,11 +250,13 @@ def run(args):
                     seg = seg[sidx]
                 seqs[b].append(seg)
             Yrows.append(yv)
+            Rrows.append(rv)
             times.append(tm)
 
     B = len(WINDOWS_MIN)
     seq_arr = [np.asarray(seqs[b], dtype=np.float32) for b in range(B)]
     Y = np.asarray(Yrows, dtype=np.float32)
+    R = np.asarray(Rrows, dtype=np.float32)
     times = np.array(times)
     print(f"  samples: {len(Y):,}   branch shapes: {[s.shape for s in seq_arr]}",
           flush=True)
@@ -169,25 +264,26 @@ def run(args):
     # Purged split by time.
     uniq = np.sort(np.unique(times))
     split = uniq[int(args.cv_frac * len(uniq))]
-    purge_dt = uniq[max(0, int(args.cv_frac*len(uniq)) - max(WINDOWS_MIN))]
+    purge_dt = uniq[max(0, int(args.cv_frac*len(uniq)) - max(H_BARS))]
     tr = times < purge_dt
     te = times >= split
     print(f"  train={tr.sum():,}  test={te.sum():,}", flush=True)
 
-    seq_tr, seq_te = [], []
-    for s in seq_arr:
-        mu = s[tr].reshape(-1, s.shape[2]).mean(0)
-        sd = s[tr].reshape(-1, s.shape[2]).std(0) + 1e-9
-        seq_tr.append((s[tr]-mu)/sd); seq_te.append((s[te]-mu)/sd)
+    # The model owns per branch standardization now, so pass raw sequences.
+    seq_tr = [s[tr] for s in seq_arr]
+    seq_te = [s[te] for s in seq_arr]
     Ytr, Yte = Y[tr], Y[te]
+    Rtr, Rte = R[tr], R[te]
 
-    print("\n[Train] Intraday multi-scale coupled model ...", flush=True)
+    print("\n[Train] Intraday multi-scale coupled model (vol + quantile bands) ...",
+          flush=True)
     net = MultiScaleTermStructureNet(windows=WINDOWS_MIN, hidden=24,
                                      trunk_sizes=(128, 64),
                                      smooth_lambda=args.smooth_lambda,
                                      epochs=args.epochs, patience=150, verbose=20)
-    net.fit(seq_tr, Ytr)
+    net.fit(seq_tr, Ytr, Rtr)
     P = net.predict_proba(seq_te)
+    bands = net.predict_bands(seq_te)
 
     print("\n=== Per-horizon intraday test AUC ===")
     aucs = [roc_auc(Yte[:, b], P[:, b]) for b in range(B)]
@@ -195,6 +291,11 @@ def run(args):
         print(f"  {w:>4}m   AUC={a:.4f}")
     ascii_bars([f"{w}m" for w in WINDOWS_MIN], aucs,
                "[Graph] Intraday per-horizon test AUC (1m to 240m):")
+    _report_bands(WINDOWS_MIN, bands, Rte, "m")
+
+    save_path = os.path.join(OUT_DIR, f"multiscale_intraday_{args.interval}.npz")
+    net.save(save_path)
+    print(f"\n[Save] Intraday multi-scale model written to {save_path}", flush=True)
 
     # Horizon in trading days (390 minutes per trading day) for a common axis.
     return [{"label": f"{w}m", "days": w / 390.0, "mean_vol": mv, "auc": a}
@@ -202,7 +303,13 @@ def run(args):
 
 
 def main():
-    run(parse_args())
+    args = parse_args()
+    res = run(args)
+    ej = getattr(args, "emit_json", None)
+    if ej:
+        import json
+        with open(ej, "w") as f:
+            json.dump(res, f)
 
 
 if __name__ == "__main__":

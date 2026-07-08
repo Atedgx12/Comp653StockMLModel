@@ -39,6 +39,23 @@ def ascii_bars(labels, values, title, width=46, fmt="{:.4f}"):
         print(f"  {str(lab):>6} | {bar:<{width}} {fmt.format(v)}", flush=True)
 
 
+def _report_bands(labels, bands, Rte, unit, quantiles=(0.05, 0.25, 0.50, 0.75, 0.95)):
+    """Report calibrated quantile band coverage and an example price cone."""
+    import numpy as _np
+    lo = bands[:, :, 0]; hi = bands[:, :, -1]
+    cover = ((Rte >= lo) & (Rte <= hi)).mean(axis=0)
+    ascii_bars([f"{w}{unit}" for w in labels], [float(c) for c in cover],
+               "[Bands] Calibrated 90% band coverage by horizon (target 0.90):",
+               fmt="{:.3f}")
+    print("\n[Bands] Example price cone for a $100 stock (last horizon), "
+          "average over test:")
+    avg = bands.mean(axis=0)   # (B, Q)
+    b = len(labels) - 1
+    for tau, qq in zip(quantiles, avg[b]):
+        print(f"    {int(tau*100):>3}th pct:  ${100.0 * float(_np.exp(qq)):.2f}",
+              flush=True)
+
+
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--start", default="2010-01-01")
@@ -47,26 +64,92 @@ def parse_args():
     p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--min-dollar-vol", type=float, default=50_000_000.0)
     p.add_argument("--cv-frac", type=float, default=0.80)
+    p.add_argument("--warm-start", default=None,
+                   help="Intraday checkpoint to warm start the shared trunk from.")
+    p.add_argument("--warm-start-window-days", type=int, default=60,
+                   help="Length in days of the intraday window, used by the "
+                        "leakage guard.")
+    p.add_argument("--warm-start-force", action="store_true",
+                   help="Override the leakage guard and warm start anyway.")
+    p.add_argument("--stack-intraday", action="store_true",
+                   help="Append intraday realized volatility as a daily feature.")
+    p.add_argument("--stack-interval", default="5m")
+    p.add_argument("--stack-period", default="60d")
+    p.add_argument("--stack-min-train-cov", type=float, default=0.02,
+                   help="Skip stacking if train coverage is below this fraction.")
+    p.add_argument("--emit-json", default=None,
+                   help="Write the per-horizon results to this JSON path.")
     return p.parse_args()
 
 
+def build_intraday_stack(tickers, index, ticker_col, interval, period):
+    """Per (ticker, date) realized intraday volatility aligned to the daily grid.
+
+    This feeds the finer scale forward as one daily feature. Returns the aligned
+    values with missing entries as NaN, plus the coverage fraction over the grid.
+    """
+    from intraday_run import download_bars
+    cache_prefix = os.path.join(OUT_DIR, f"intraday_{interval}")
+    fields = download_bars(list(tickers), cache_prefix, interval, period)
+    close_i = fields["Close"]
+    rows = []
+    for t in close_i.columns:
+        c = close_i[t].dropna()
+        if len(c) < 50:
+            continue
+        r = np.log(c / c.shift(1))
+        rv = r.groupby(c.index.normalize()).std()
+        rows.append(pd.DataFrame({"date": rv.index, "ticker": t,
+                                  "iv": rv.values}))
+    if not rows:
+        return None, 0.0
+    long = pd.concat(rows, ignore_index=True)
+    key = pd.DataFrame({"date": pd.to_datetime(index), "ticker": ticker_col})
+    key["_o"] = np.arange(len(key))
+    merged = key.merge(long, on=["date", "ticker"], how="left").sort_values("_o")
+    vals = merged["iv"].values.astype(np.float32)
+    cover = float(np.mean(~np.isnan(vals)))
+    return vals, cover
+
+
+
 def daily_seq_features(close, vol):
-    """Compact daily dynamics per ticker used inside the window sequences."""
+    """Compact daily dynamics per ticker used inside the window sequences.
+
+    These features are shared by all six window branches, so enriching them
+    enriches every horizon at once.
+    """
+    eps = 1e-9
     feats = {}
     for t in close.columns:
         c = close[t].dropna()
         if len(c) < 300:
             continue
         r1 = np.log(c / c.shift(1))
+        rvol5 = r1.rolling(5).std()
+        rvol20 = r1.rolling(20).std()
+        if t in vol.columns:
+            v = vol[t].reindex(c.index)
+            vmed = v.rolling(20, min_periods=5).median()
+            rel_vol = np.log1p((v / (vmed + eps)).clip(lower=0.0))
+            dvol = np.log(v + 1.0).diff()
+        else:
+            rel_vol = 0.0 * r1
+            dvol = 0.0 * r1
         df = pd.DataFrame({
-            "r1":     r1,
-            "absr":   r1.abs(),
-            "rvol5":  r1.rolling(5).std(),
-            "rvol10": r1.rolling(10).std(),
-            "rvol20": r1.rolling(20).std(),
-            "mom10":  (c / c.shift(10) - 1.0),
-            "dvol":   (np.log(vol[t].reindex(c.index) + 1.0).diff()
-                       if t in vol.columns else 0.0 * r1),
+            "r1":       r1,
+            "absr":     r1.abs(),
+            "rvol5":    rvol5,
+            "rvol10":   r1.rolling(10).std(),
+            "rvol20":   rvol20,
+            "rvol60":   r1.rolling(60).std(),
+            "vol_ratio": rvol5 / (rvol20 + eps),
+            "mom10":    (c / c.shift(10) - 1.0),
+            "mom20":    (c / c.shift(20) - 1.0),
+            "accel":    (r1 - r1.shift(1)),
+            "dvol":     dvol,
+            "rel_vol":  rel_vol,
+            "signed_vol": np.sign(r1) * rel_vol,
         }).fillna(0.0)
         feats[t] = df
     return feats
@@ -130,20 +213,23 @@ def build_labels(close, index, ticker_col, horizons):
                 d[f"h{h}"] = r1.shift(-1).abs().values
             else:
                 d[f"h{h}"] = r1.rolling(h).std().shift(-h).values
+            # Forward log return over the horizon, the quantile band target.
+            d[f"r{h}"] = np.log(c.shift(-h) / c).values
         rows.append(pd.DataFrame(d))
     allf = pd.concat(rows, ignore_index=True)
     for h in horizons:
         rank = allf.groupby("date")[f"h{h}"].rank(pct=True)
         allf[f"y{h}"] = (rank >= 0.5).astype(float)
         allf.loc[allf[f"h{h}"].isna(), f"y{h}"] = np.nan
-    lab = allf[["date", "ticker"] + [f"y{h}" for h in horizons]]
+    ycols = [f"y{h}" for h in horizons]
+    rcols = [f"r{h}" for h in horizons]
+    lab = allf[["date", "ticker"] + ycols + rcols]
     key = pd.DataFrame({"date": pd.to_datetime(index), "ticker": ticker_col})
     key["_order"] = np.arange(len(key))
     merged = key.merge(lab, on=["date", "ticker"], how="left").sort_values("_order")
-    # Mean daily realized volatility per horizon, the actual term structure
-    # shape of the data before the median split into labels.
     mean_vol = [float(allf[f"h{h}"].mean()) for h in horizons]
-    return merged[[f"y{h}" for h in horizons]].values, mean_vol
+    return (merged[ycols].values, mean_vol, merged[rcols].values)
+
 
 
 def run(args):
@@ -177,7 +263,7 @@ def run(args):
 
     print("[Labels] Forward volatility at horizons "
           f"{windows} ...", flush=True)
-    Y, mean_vol = build_labels(close, index, ticker_col, windows)
+    Y, mean_vol, Yret = build_labels(close, index, ticker_col, windows)
 
     # Show the actual volatility term structure shape of the data.
     ascii_bars([f"{w}d" for w in windows], mean_vol,
@@ -187,9 +273,23 @@ def run(args):
     print("[Sequences] Building six day-window branches ...", flush=True)
     seqs, valid = build_multiscale_sequences(close, vol, index, ticker_col, windows)
 
-    keep = valid & ~np.isnan(Y).any(axis=1)
+    keep = valid & ~np.isnan(Y).any(axis=1) & ~np.isnan(Yret).any(axis=1)
+
+    # Optional stacking: feed the intraday scale forward as one daily feature.
+    stack_kept = None
+    if getattr(args, "stack_intraday", False):
+        print("[Stack] Building intraday volatility feature ...", flush=True)
+        stack_full, cover = build_intraday_stack(
+            close.columns, index, ticker_col,
+            getattr(args, "stack_interval", "5m"),
+            getattr(args, "stack_period", "60d"))
+        if stack_full is not None:
+            print(f"  intraday feature coverage over the daily grid: {cover:.4f}",
+                  flush=True)
+            stack_kept = stack_full[keep]
+
     seqs = [s[keep] for s in seqs]
-    Y = Y[keep]
+    Y = Y[keep]; Yret = Yret[keep]
     index = index[keep]
     print(f"  valid rows: {keep.sum():,}   branch shapes: "
           f"{[s.shape for s in seqs]}", flush=True)
@@ -204,22 +304,69 @@ def run(args):
     te = index >= split_dt
     print(f"  train={tr.sum():,}  test={te.sum():,}  purge={purge}", flush=True)
 
-    # Standardize each branch by its training mean and std.
-    seq_tr, seq_te = [], []
-    for s in seqs:
-        mu = s[tr].reshape(-1, s.shape[2]).mean(0)
-        sd = s[tr].reshape(-1, s.shape[2]).std(0) + 1e-9
-        seq_tr.append((s[tr] - mu) / sd)
-        seq_te.append((s[te] - mu) / sd)
+    # The model owns per branch standardization now, so pass raw sequences.
+    seq_tr = [s[tr] for s in seqs]
+    seq_te = [s[te] for s in seqs]
     Ytr, Yte = Y[tr], Y[te]
+    Rtr, Rte = Yret[tr], Yret[te]
 
-    print("\n[Train] Multi-scale coupled model ...", flush=True)
+    # Append the stacked intraday feature, guarded on train coverage so a
+    # feature that is absent during training cannot shift the test distribution.
+    if stack_kept is not None:
+        s0 = np.nan_to_num(stack_kept, nan=0.0)
+        tr_cov = float(np.mean(s0[tr] != 0.0))
+        te_cov = float(np.mean(s0[te] != 0.0))
+        print(f"[Stack] nonzero coverage  train={tr_cov:.4f}  test={te_cov:.4f}",
+              flush=True)
+        thr = getattr(args, "stack_min_train_cov", 0.02)
+        if tr_cov < thr:
+            print(f"[Stack] SKIPPED: train coverage {tr_cov:.4f} below "
+                  f"{thr:.4f}. The intraday history is too short to train on, "
+                  "so the feature is dropped to avoid a train and test mismatch.",
+                  flush=True)
+        else:
+            def _append(seq_list, mask):
+                sc = s0[mask]
+                out = []
+                for s in seq_list:
+                    col = np.broadcast_to(sc[:, None, None],
+                                          (s.shape[0], s.shape[1], 1)).astype(s.dtype)
+                    out.append(np.concatenate([s, col], axis=2))
+                return out
+            seq_tr = _append(seq_tr, tr)
+            seq_te = _append(seq_te, te)
+            print(f"  appended intraday feature  new branch dim="
+                  f"{seq_tr[0].shape[2]}", flush=True)
+
+    print("\n[Train] Multi-scale coupled model (vol + quantile bands) ...",
+          flush=True)
     net = MultiScaleTermStructureNet(windows=windows, hidden=24,
                                      trunk_sizes=(128, 64),
                                      smooth_lambda=args.smooth_lambda,
                                      epochs=args.epochs, patience=150, verbose=20)
-    net.fit(seq_tr, Ytr)
+
+    # Optional guarded warm start from the intraday model. The intraday window
+    # sits inside the daily test period, so a naive warm start would leak the
+    # test period into training. The guard declines unless it is forced.
+    ws = getattr(args, "warm_start", None)
+    if ws:
+        max_dt = index.max()
+        window = int(getattr(args, "warm_start_window_days", 60))
+        intraday_start = max_dt - np.timedelta64(window, "D")
+        overlaps = (split_dt <= max_dt) and (max_dt >= intraday_start)
+        force = getattr(args, "warm_start_force", False)
+        print(f"[Warm start] intraday window >= {intraday_start}  "
+              f"daily test starts {split_dt}", flush=True)
+        if overlaps and not force:
+            print("[Warm start] SKIPPED: intraday window overlaps the daily "
+                  "test period, warm starting would leak. Use --warm-start-force "
+                  "to override.", flush=True)
+        else:
+            net.warm_start_from(ws, seq_tr[0].shape[2])
+
+    net.fit(seq_tr, Ytr, Rtr)
     P = net.predict_proba(seq_te)
+    bands = net.predict_bands(seq_te)
 
     print("\n=== Per-horizon test AUC (multi-scale) ===")
     aucs = [roc_auc(Yte[:, b], P[:, b]) for b in range(len(windows))]
@@ -229,6 +376,11 @@ def run(args):
                "[Graph] Per-horizon test AUC across 1/5/10/30/90/180 days:")
     curv = float(np.mean((P[:, 2:] - 2*P[:, 1:-1] + P[:, :-2])**2))
     print(f"\n  Term-structure curvature on test: {curv:.5f}")
+    _report_bands(windows, bands, Rte, "d")
+
+    save_path = os.path.join(OUT_DIR, "multiscale_daily.npz")
+    net.save(save_path)
+    print(f"\n[Save] Daily multi-scale model written to {save_path}", flush=True)
 
     # One result per horizon, with the horizon expressed in trading days so it
     # can be merged with the intraday horizons on a common axis.
@@ -237,7 +389,13 @@ def run(args):
 
 
 def main():
-    run(parse_args())
+    args = parse_args()
+    res = run(args)
+    ej = getattr(args, "emit_json", None)
+    if ej:
+        import json
+        with open(ej, "w") as f:
+            json.dump(res, f)
 
 
 if __name__ == "__main__":

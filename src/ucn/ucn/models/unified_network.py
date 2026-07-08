@@ -122,8 +122,8 @@ class UnifiedCourseNetwork:
 
     # ── Forward pass ─────────────────────────────────────────────────────
 
-    def _forward(self, X: np.ndarray, training: bool = True,
-                 seqs: np.ndarray = None) -> dict:
+    def _forward(self, X: _np.ndarray, training: bool = True,
+                 seqs: _np.ndarray = None) -> dict:
         cfg = self.cfg
         if cfg.use_sent:
             X_price = X[:, :-1]
@@ -217,8 +217,8 @@ class UnifiedCourseNetwork:
 
     # ── Backward pass ────────────────────────────────────────────────────
 
-    def _backward(self, c: dict, Y_oh: np.ndarray,
-                  sample_weights: np.ndarray = None):
+    def _backward(self, c: dict, Y_oh: _np.ndarray,
+                  sample_weights: _np.ndarray = None):
         cfg = self.cfg
         X   = c['X']; N = Y_oh.shape[0]; K = self.n_classes
         g   = {}
@@ -377,9 +377,9 @@ class UnifiedCourseNetwork:
 
     # ── Training loop ────────────────────────────────────────────────────
 
-    def fit(self, X: np.ndarray, y: np.ndarray,
-            sample_weights: np.ndarray = None,
-            seqs: np.ndarray = None) -> "UnifiedCourseNetwork":
+    def fit(self, X: _np.ndarray, y: _np.ndarray,
+            sample_weights: _np.ndarray = None,
+            seqs: _np.ndarray = None) -> "UnifiedCourseNetwork":
         """seqs : (N, T, d) optional LSTM sequence input aligned with X."""
         cfg = self.cfg
         # Move all inputs onto the compute device once, so every matmul below
@@ -519,14 +519,14 @@ class UnifiedCourseNetwork:
             name = group_names[i] if i < len(group_names) else f"group{i}"
             print(f"{name:<20} {float(scale[i]):>8.3f}")
 
-    def predict_proba(self, X: np.ndarray,
-                      seqs: np.ndarray = None) -> np.ndarray:
+    def predict_proba(self, X: _np.ndarray,
+                      seqs: _np.ndarray = None) -> _np.ndarray:
         out = self._forward(to_device(X), training=False,
                             seqs=to_device(seqs))['Y_hat']
         return to_cpu(out)
 
-    def predict(self, X: np.ndarray,
-                seqs: np.ndarray = None) -> np.ndarray:
+    def predict(self, X: _np.ndarray,
+                seqs: _np.ndarray = None) -> _np.ndarray:
         return _np.argmax(self.predict_proba(X, seqs=seqs), axis=1)
 
     # ── Checkpoint persistence ───────────────────────────────────────────

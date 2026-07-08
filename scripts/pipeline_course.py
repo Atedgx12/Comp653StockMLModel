@@ -26,6 +26,18 @@ OUT_DIR = os.path.dirname(os.path.abspath(__file__))
 SEED    = 42
 rng     = np.random.default_rng(SEED)
 
+# Prediction horizon in trading days.
+# 1 = next day (original),  5 = next week,  20 = next month,  60 = next quarter
+# NOTE: changing HORIZON requires deleting any cached feature parquets so
+#       the label is rebuilt from scratch.
+HORIZON = 63
+
+# Stride for label-overlap reduction.
+# Adjacent rows share (HORIZON-1)/HORIZON of their label window.
+# LABEL_STRIDE = HORIZON // 3 keeps every 3rd week, cutting overlap to ~67%.
+# Set to 1 to disable (use every row).
+LABEL_STRIDE = max(1, HORIZON // 3)  # 21 for HORIZON=63
+
 # ===========================================================================
 # MODULE 2 — Information Theory: Mutual Information Feature Selection
 # ===========================================================================
@@ -860,7 +872,7 @@ def fetch_sentiment(tickers, close_index):
                   columns = ticker symbols, index = trading dates
                   values  = daily average VADER compound score
     """
-    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer  # type: ignore
 
     cache = os.path.join(OUT_DIR, "sentiment_cache.parquet")
     if os.path.exists(cache):
@@ -1065,7 +1077,7 @@ def download_prices(tickers, start="2015-01-01",
     missed = [t for t in tickers if t not in succeeded]
     if missed:
         try:
-            import pandas_datareader.data as web
+            import pandas_datareader.data as web  # type: ignore
             print(f"    Stooq fallback for {len(missed)} tickers ...", flush=True)
             stooq_frames = []
             for t in missed:
@@ -1253,9 +1265,13 @@ def make_features(close: pd.DataFrame, sent_df: pd.DataFrame = None,
         # independent labels: r[t+1] and r[t+2] share no days of outcome.
         # This avoids the label autocorrelation that plagues multi-day
         # horizons and lets the model train on all ~220K cross-sectional rows.
-        feat["_fwd"]        = np.log(c.shift(-1) / c)
+        feat["_fwd"]        = np.log(c.shift(-HORIZON) / c)
 
         df = pd.DataFrame(feat, index=c.index).dropna()
+        # Stride sampling: keep only every LABEL_STRIDE-th row per ticker
+        # to reduce label autocorrelation from the overlapping forward window.
+        if LABEL_STRIDE > 1:
+            df = df.iloc[::LABEL_STRIDE]
         all_X.append(df)
         if (i + 1) % 50 == 0:
             print(f"    {i+1}/{len(tickers)} tickers ...", flush=True)
@@ -1309,15 +1325,23 @@ def make_features(close: pd.DataFrame, sent_df: pd.DataFrame = None,
 # ===========================================================================
 
 def walk_forward(X_np, y_np, dates, model_cls, model_kwargs, model_name,
-                 n_splits=5, scale=True):
+                 n_splits=5, scale=True, purge=HORIZON):
+    """
+    Walk-forward cross-validation with purge gap.
+    The last `purge` trading days of each training fold are dropped to prevent
+    label lookahead: when HORIZON > 1, the label of the final training rows
+    overlaps with the test period by up to HORIZON-1 days.
+    """
     unique_dates = np.sort(np.unique(dates))
     fold_size    = len(unique_dates) // (n_splits + 1)
     accs, aucs   = [], []
     print(f"\n  [{model_name}]", flush=True)
     for fold in range(n_splits):
-        tr_end = unique_dates[(fold + 1) * fold_size]
-        te_end = unique_dates[min((fold + 2) * fold_size, len(unique_dates) - 1)]
-        tr_m   = dates < tr_end
+        tr_end    = unique_dates[(fold + 1) * fold_size]
+        te_end    = unique_dates[min((fold + 2) * fold_size, len(unique_dates) - 1)]
+        # Purge: exclude the last `purge` dates before tr_end from training
+        purge_start = unique_dates[max(0, (fold + 1) * fold_size - purge)]
+        tr_m   = dates < purge_start
         te_m   = (dates >= tr_end) & (dates < te_end)
         X_tr, X_te = X_np[tr_m], X_np[te_m]
         y_tr, y_te = y_np[tr_m], y_np[te_m]
@@ -1349,10 +1373,14 @@ def walk_forward(X_np, y_np, dates, model_cls, model_kwargs, model_name,
 # Final retrain + plots
 # ===========================================================================
 
-def retrain_and_plot(X_np, y_np, dates, feat_names, model, model_name, scale=True):
+def retrain_and_plot(X_np, y_np, dates, feat_names, model, model_name,
+                     scale=True, purge=HORIZON):
     unique_dates = np.sort(np.unique(dates))
-    split_dt     = unique_dates[int(0.85 * len(unique_dates))]
-    tr_m = dates < split_dt
+    split_idx    = int(0.85 * len(unique_dates))
+    split_dt     = unique_dates[split_idx]
+    # Purge: exclude the last `purge` dates before split from training
+    purge_dt     = unique_dates[max(0, split_idx - purge)]
+    tr_m = dates < purge_dt
     te_m = dates >= split_dt
     X_tr, X_te = X_np[tr_m], X_np[te_m]
     y_tr, y_te = y_np[tr_m], y_np[te_m]
@@ -1506,11 +1534,11 @@ if __name__ == "__main__":
     print("\n[5] Full retrain — UnifiedCourseNetwork on entire dataset ...",
           flush=True)
     unified = UnifiedCourseNetwork(
-        hidden_sizes=(256, 128, 64), lr=1e-3, epochs=3000,
-        batch_size=2048, lam=3e-4, beta1=0.9, beta2=0.999,
-        dropout_rate=0.4, meta_dropout=0.2, val_frac=0.15, verbose=20,
+        hidden_sizes=(256, 128, 64), lr=3e-4, epochs=3000,
+        batch_size=2048, lam=1e-3, beta1=0.9, beta2=0.999,
+        dropout_rate=0.6, meta_dropout=0.3, val_frac=0.15, verbose=20,
         patience=150, use_sent=has_sent,
-        grad_clip=1.0, noise_frac=0.02, warmup_epochs=5,
+        grad_clip=1.0, noise_frac=0.05, warmup_epochs=5,
         use_fgsm=True, fgsm_eps=0.01, pgd_steps=5)
     final_acc, final_auc, mu_f, sd_f = retrain_and_plot(
         X_sel, y_all, dates, selected, unified,
