@@ -87,6 +87,8 @@ def parse_args():
                    help="Disable the cross sectional context branch.")
     p.add_argument("--no-decision", action="store_true",
                    help="Disable the decision layer and per-ticker ledger.")
+    p.add_argument("--context-top-k", type=int, default=25,
+                   help="Keep the top-K context features by MI with volatility.")
     p.add_argument("--emit-json", default=None,
                    help="Write the per-horizon results to this JSON path.")
     return p.parse_args()
@@ -302,7 +304,9 @@ def run(args):
             if _tidx.tz is not None:
                 _tidx = _tidx.tz_localize(None)
             sdates = _tidx.normalize().values
-            ctx_full, ctx_names = build_context_features(dclose, dvol, sdates, tk_arr)
+            ctx_full, ctx_names = build_context_features(
+                dclose, dvol, sdates, tk_arr, ref_label=Y[:, -1],
+                top_k=getattr(args, "context_top_k", 25))
             print(f"[Context] intraday context ({len(ctx_names)} features) "
                   f"aligned by ticker and day", flush=True)
             ctx_tr = np.nan_to_num(ctx_full[tr], nan=0.5).astype(np.float32)

@@ -85,20 +85,24 @@ def parse_args():
                    help="Epochs per cosine cycle when warm restarts are on.")
     p.add_argument("--no-decision", action="store_true",
                    help="Disable the decision layer and per-ticker ledger.")
+    p.add_argument("--context-top-k", type=int, default=25,
+                   help="Keep the top-K context features by MI with volatility.")
     p.add_argument("--emit-json", default=None,
                    help="Write the per-horizon results to this JSON path.")
     return p.parse_args()
 
 
-def build_context_features(close, vol, index, ticker_col):
-    """Full cross sectional context vector fused into the trunk.
+def build_context_features(close, vol, index, ticker_col, ref_label=None,
+                           top_k=25):
+    """Cross sectional context vector fused into the trunk.
 
-    This calls the real make_features to build the same rich signal the strong
-    cross sectional model used: the multi lag returns, multi window volatility
-    and momentum, the nomadic indicators, and the hierarchy of stock versus
-    sector versus market, each ranked per date so the context is market neutral.
-    The market and sector relative columns carry the hierarchy signal, and the
-    model gates them. The features are aligned to the multi scale grid.
+    This calls the real make_features to build the rich signal the strong cross
+    sectional model used: multi lag returns, multi window volatility and
+    momentum, the nomadic indicators, and the hierarchy of stock versus sector
+    versus market. It then selects the top_k features by mutual information with
+    the volatility label, which is what the strong model did, so the informative
+    volatility and hierarchy features are kept and the directional noise that
+    overfits a volatility target is dropped. The features are aligned to the grid.
     """
     from ucn.data.features import make_features
     try:
@@ -122,6 +126,26 @@ def build_context_features(close, vol, index, ticker_col):
     ctx = merged[feat_cols].values
     cov = float(np.mean(~np.isnan(ctx).any(axis=1)))
     print(f"  context grid coverage: {cov:.3f}", flush=True)
+
+    # Mutual information selection: keep the top_k context features most
+    # informative about volatility, the step the strong model used to avoid
+    # overfitting on the directional features.
+    if ref_label is not None and top_k and top_k < len(feat_cols):
+        try:
+            from ucn.information_theory import select_features_by_mi
+            m = ~np.isnan(ctx).any(axis=1) & ~np.isnan(np.asarray(ref_label,
+                                                                  dtype=float))
+            if m.sum() > 2000:
+                sel, _ = select_features_by_mi(
+                    ctx[m], np.asarray(ref_label, dtype=float)[m],
+                    feat_cols, k=top_k, verbose=False)
+                idx = [feat_cols.index(s) for s in sel]
+                ctx = ctx[:, idx]
+                feat_cols = list(sel)
+                print(f"  MI-selected top {len(feat_cols)} context features: "
+                      f"{feat_cols[:12]} ...", flush=True)
+        except Exception as e:
+            print(f"  MI selection skipped: {e}", flush=True)
     # Ranked and macro features both live in a zero to one band, so a missing
     # row is filled with the neutral centre rather than zero.
     ctx = np.nan_to_num(ctx, nan=0.5).astype(np.float32)
@@ -326,7 +350,10 @@ def run(args):
     if not getattr(args, "no_context", False):
         print("[Context] Building cross sectional hierarchy features ...",
               flush=True)
-        ctx_full, ctx_names = build_context_features(close, vol, index, ticker_col)
+        ctx_full, ctx_names = build_context_features(
+            close, vol, index, ticker_col,
+            ref_label=Y[:, min(4, Y.shape[1] - 1)],
+            top_k=getattr(args, "context_top_k", 25))
         ctx_kept = ctx_full[keep]
         print(f"  context features ({len(ctx_names)}): {ctx_names[:12]} ...",
               flush=True)
