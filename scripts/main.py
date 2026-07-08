@@ -94,6 +94,10 @@ def parse_args():
                    help="Drop names below this median daily dollar volume in "
                         "dollars, a proxy for market cap and liquidity. "
                         "Example: 50000000 for a 50 million dollar floor.")
+    p.add_argument("--target", choices=["return", "vol"], default="return",
+                   help="Prediction target. 'return' classifies forward return "
+                        "direction. 'vol' classifies forward realized "
+                        "volatility, which clusters and is far more predictable.")
     p.add_argument("--no-sent",     action="store_true")
     p.add_argument("--checkpoint",  default=None)
     p.add_argument("--cv-only",     action="store_true")
@@ -384,7 +388,8 @@ def main():
             stride=args.stride,
             use_nomadic=args.use_nomadic,
             use_hierarchy=args.use_hierarchy,
-            sector_map=sector_map)
+            sector_map=sector_map,
+            target=args.target)
         dates = X_df.index.values
         # Extract ticker column for LSTM (not a training feature)
         ticker_ids = X_df.pop("_ticker").values if "_ticker" in X_df.columns else None

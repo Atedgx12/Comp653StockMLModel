@@ -19,6 +19,7 @@ def make_features(
     use_nomadic: bool = False,
     use_hierarchy: bool = False,
     sector_map: Optional[dict] = None,
+    target: str = "return",
 ) -> Tuple[pd.DataFrame, pd.Series, List[str], bool]:
     """
     Build the cross-sectional feature matrix and labels.
@@ -105,7 +106,14 @@ def make_features(
         feat["_sent"]  = (sent_df[ticker].reindex(c.index).fillna(0.0)
                           if sent_df is not None and ticker in sent_df.columns
                           else 0.0)
-        feat["_fwd"]   = np.log(c.shift(-horizon) / c)
+        # Prediction target.  "return" labels the forward log return over the
+        # horizon.  "vol" labels the forward realized volatility, the standard
+        # deviation of daily returns over the horizon, which clusters in time
+        # and is far more predictable than direction.
+        if target == "vol":
+            feat["_fwd"] = r1.rolling(horizon).std().shift(-horizon)
+        else:
+            feat["_fwd"] = np.log(c.shift(-horizon) / c)
         feat["_ticker"] = ticker   # preserve identity for LSTM sequence building
 
         # Optional: NomadicStockBot extended indicators
@@ -177,8 +185,9 @@ def make_features(
     else:
         feat_names_out = feat_names
 
-    print(f"  Building labels (top {int(top_pct*100)}% vs "
-          f"bottom {int(bottom_pct*100)}%) ...", flush=True)
+    label_kind = "high vs low volatility" if target == "vol" else \
+                 f"top {int(top_pct*100)}% vs bottom {int(bottom_pct*100)}%"
+    print(f"  Building labels ({label_kind}) ...", flush=True)
     fwd_rank = fwd_raw.groupby(fwd_raw.index).rank(pct=True)
     y = pd.Series(np.nan, index=fwd_raw.index)
     y[fwd_rank >= (1.0 - top_pct)]  = 1
