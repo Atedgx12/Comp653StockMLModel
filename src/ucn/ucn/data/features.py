@@ -91,6 +91,7 @@ def make_features(
                           if sent_df is not None and ticker in sent_df.columns
                           else 0.0)
         feat["_fwd"]   = np.log(c.shift(-horizon) / c)
+        feat["_ticker"] = ticker   # preserve identity for LSTM sequence building
 
         # Optional: NomadicStockBot extended indicators
         if use_nomadic:
@@ -116,6 +117,7 @@ def make_features(
     X_full    = pd.concat(all_X).sort_index()
     fwd_raw   = X_full.pop("_fwd")
     sent_raw  = X_full.pop("_sent")
+    ticker_col = X_full.pop("_ticker")   # preserve for LSTM — not a feature
     feat_names = X_full.columns.tolist()
 
     print("  Computing cross-sectional ranks ...", flush=True)
@@ -137,6 +139,8 @@ def make_features(
     keep     = y.notna()
     X_final  = X_ranked[keep]
     y_final  = y[keep].astype(int)
+    # Attach ticker column for LSTM sequence building (not used in training directly)
+    X_final["_ticker"] = ticker_col[keep]
 
     # Stride subsampling: keep only every stride-th unique date to reduce
     # label autocorrelation caused by overlapping forward-return windows.

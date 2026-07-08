@@ -174,56 +174,58 @@ def build_sequences(
     X_df: "pd.DataFrame",
     ticker_col: str = "_ticker",
     lookback: int = 20,
-) -> "np.ndarray":
+) -> "tuple":
     """
-    Build a (N, lookback, d) sequence tensor from the point-in-time feature
-    matrix returned by make_features().
+    Build a (N_valid, lookback, d) sequence tensor from the cross-sectional
+    feature matrix returned by make_features().
 
-    For each (ticker, date) row, looks back `lookback` trading days and
-    stacks the feature vectors into a sequence.  Rows without enough history
-    are dropped (returned mask indicates which rows are kept).
+    Each row in X_df represents one (ticker, date) pair.  For each row that
+    has at least `lookback` prior rows from the SAME TICKER, a sequence of
+    the past `lookback` feature vectors is created.  Rows without enough
+    history are excluded and indicated by mask=False.
 
     Parameters
     ----------
-    X_df     : DataFrame from make_features() with date index
-    lookback : number of past days to include (T in the LSTM input)
+    X_df     : DataFrame with date index; must contain a ``_ticker`` column.
+    lookback : number of past days to include (T in the LSTM input).
 
     Returns
     -------
-    seqs  : float64 array (N_valid, lookback, d)
-    mask  : bool array (len(X_df),)  — True for rows included in seqs
+    seqs  : float64 array  (N_valid, lookback, d)
+    mask  : bool array     (len(X_df),)  — True for rows included in seqs.
     """
     import pandas as pd
 
-    dates    = X_df.index.values
-    feat_cols = [c for c in X_df.columns
-                 if c not in (ticker_col, "label")]
-    d = len(feat_cols)
+    feat_cols = [c for c in X_df.columns if c != ticker_col]
+    d    = len(feat_cols)
+    N    = len(X_df)
+    mask = np.zeros(N, dtype=bool)
 
-    # Group by ticker if column available, else treat all rows as one group
-    if ticker_col in X_df.columns:
-        groups = X_df.groupby(ticker_col)
-    else:
-        groups = [("all", X_df)]
+    if ticker_col not in X_df.columns:
+        print("  build_sequences: no ticker column — LSTM disabled.", flush=True)
+        return np.empty((0, lookback, d)), mask
 
     seqs_list = []
-    mask      = np.zeros(len(X_df), dtype=bool)
 
-    for _, grp in groups:
-        grp_sorted = grp.sort_index()
-        idx_positions = [X_df.index.get_loc(i) if not isinstance(i, int) else i
-                         for i in grp_sorted.index]
-        vals = grp_sorted[feat_cols].values.astype(np.float64)
+    # Use a reset index so we have stable integer positions 0..N-1
+    df_pos = X_df.reset_index()          # adds original date as a column
+    date_col = df_pos.columns[0]         # first col is the date index
 
-        for j in range(len(grp_sorted)):
-            if j < lookback:
-                continue   # not enough history
-            seq  = vals[j - lookback:j]   # (lookback, d)
+    for ticker_name, grp in df_pos.groupby(ticker_col):
+        grp_s   = grp.sort_values(date_col)           # sort by date
+        pos     = grp_s.index.values                   # positions in original df
+        vals    = grp_s[feat_cols].values.astype(np.float64)
+
+        for j in range(lookback, len(grp_s)):
+            seq = vals[j - lookback:j]                 # (lookback, d)
             seqs_list.append(seq)
-            if isinstance(idx_positions[j], (int, np.integer)):
-                mask[idx_positions[j]] = True
+            mask[pos[j]] = True
 
     if not seqs_list:
         return np.empty((0, lookback, d)), mask
 
-    return np.stack(seqs_list, axis=0).astype(np.float64), mask
+    seqs = np.stack(seqs_list, axis=0).astype(np.float64)
+    print(f"  Sequence tensor: {seqs.shape}  "
+          f"(valid={mask.sum():,} / {N:,} rows  lookback={lookback})",
+          flush=True)
+    return seqs, mask

@@ -88,7 +88,8 @@ def parse_args():
 
 def walk_forward_cv(X: np.ndarray, y: np.ndarray, dates: np.ndarray,
                     cfg: UCNConfig, n_splits: int = 5,
-                    sample_weights: np.ndarray = None) -> tuple:
+                    sample_weights: np.ndarray = None,
+                    seqs: np.ndarray = None) -> tuple:
     unique_dates = np.sort(np.unique(dates))
     fold_size    = len(unique_dates) // (n_splits + 1)
     accs, aucs   = [], []
@@ -96,7 +97,6 @@ def walk_forward_cv(X: np.ndarray, y: np.ndarray, dates: np.ndarray,
     for fold in range(n_splits):
         tr_end = unique_dates[(fold + 1) * fold_size]
         te_end = unique_dates[min((fold + 2) * fold_size, len(unique_dates) - 1)]
-        # Purge gap matching HORIZON
         purge  = getattr(cfg, 'horizon', 1)
         purge_start = unique_dates[max(0, (fold + 1) * fold_size - purge)]
         tr_m   = dates < purge_start
@@ -104,6 +104,8 @@ def walk_forward_cv(X: np.ndarray, y: np.ndarray, dates: np.ndarray,
         X_tr, X_te = X[tr_m], X[te_m]
         y_tr, y_te = y[tr_m], y[te_m]
         w_tr   = sample_weights[tr_m] if sample_weights is not None else None
+        s_tr   = seqs[tr_m] if seqs is not None else None
+        s_te   = seqs[te_m] if seqs is not None else None
         if len(X_tr) < 500 or len(X_te) < 50:
             continue
 
@@ -112,11 +114,11 @@ def walk_forward_cv(X: np.ndarray, y: np.ndarray, dates: np.ndarray,
 
         t0  = time.time()
         ucn = UnifiedCourseNetwork(cfg)
-        ucn.fit(X_tr_s, y_tr, sample_weights=w_tr)
+        ucn.fit(X_tr_s, y_tr, sample_weights=w_tr, seqs=s_tr)
         elapsed = time.time() - t0
 
-        pred  = ucn.predict(X_te_s)
-        prob  = ucn.predict_proba(X_te_s)[:, 1]
+        pred  = ucn.predict(X_te_s, seqs=s_te)
+        prob  = ucn.predict_proba(X_te_s, seqs=s_te)[:, 1]
         acc   = accuracy(y_te, pred)
         auc   = roc_auc(y_te, prob)
         accs.append(acc); aucs.append(auc)
@@ -199,6 +201,8 @@ def main():
             stride=args.stride,
             use_nomadic=args.use_nomadic)
         dates = X_df.index.values
+        # Extract ticker column for LSTM (not a training feature)
+        ticker_ids = X_df.pop("_ticker").values if "_ticker" in X_df.columns else None
         X_all = X_df.values.astype(np.float64)
         y_all = y_df.values.astype(int)
 
@@ -280,42 +284,52 @@ def main():
         lstm_hidden=args.lstm_hidden,
     )
 
-    # Build LSTM sequence tensor if requested
+    # 5a. Compute sample weights early — needed by LSTM alignment and CV
+    unique_dates   = np.sort(np.unique(dates))
+    sample_weights = (exponential_time_weights(dates, decay=args.recent_weight)
+                      if args.recent_weight > 0 else None)
+
+    # 5b. Build LSTM sequence tensor if requested
     seqs_all = None
     if args.use_lstm:
         from ucn.models.lstm import build_sequences
         print(f"\n[LSTM] Building sequence tensor "
               f"(lookback={args.lstm_lookback}) ...", flush=True)
-        # Reconstruct a DataFrame with date index to pass to build_sequences
-        import pandas as pd
+        # Build per-ticker sequences using the ticker identity column
         X_tmp = pd.DataFrame(X_sel, index=dates)
+        if ticker_ids is not None:
+            # Align ticker_ids to current X_sel (after MI selection dropped columns)
+            if len(ticker_ids) == len(X_sel):
+                X_tmp["_ticker"] = ticker_ids
+            else:
+                X_tmp["_ticker"] = ticker_ids[seq_mask] if 'seq_mask' in dir() else ticker_ids
         seqs_all, seq_mask = build_sequences(X_tmp, lookback=args.lstm_lookback)
         # Align X_sel, y_all, dates, sample_weights to valid sequence rows
         X_sel          = X_sel[seq_mask]
         y_all          = y_all[seq_mask]
         dates          = dates[seq_mask]
+        if ticker_ids is not None:
+            ticker_ids = ticker_ids[seq_mask]
         if sample_weights is not None:
             sample_weights = sample_weights[seq_mask]
         print(f"  Sequence tensor: {seqs_all.shape}  "
               f"(dropped {(~seq_mask).sum()} rows without full history)",
               flush=True)
 
-    # 5. Walk-forward CV (on first 50% of dates — covers more regimes)
-    unique_dates = np.sort(np.unique(dates))
-
-    # Compute sample weights now so both CV and full retrain can use them
-    sample_weights = (exponential_time_weights(dates, decay=args.recent_weight)
-                      if args.recent_weight > 0 else None)
+    # 5c. Walk-forward CV — recompute unique_dates after any LSTM alignment
+    unique_dates = np.sort(np.unique(dates))   # re-derived from current dates
 
     cut    = unique_dates[int(0.50 * len(unique_dates))]
     sub_m  = dates <= cut
     w_sub  = sample_weights[sub_m] if sample_weights is not None else None
     print(f"\n[CV] Walk-forward on {sub_m.sum():,} rows (first 50% of dates) ...",
           flush=True)
+    seqs_sub = seqs_all[sub_m] if seqs_all is not None else None
     cv_acc, cv_auc = walk_forward_cv(
         X_sel[sub_m], y_all[sub_m], dates[sub_m],
         cfg_cv, n_splits=args.n_cv_splits,
-        sample_weights=w_sub)
+        sample_weights=w_sub,
+        seqs=seqs_sub)
 
     pd.DataFrame([{"acc": cv_acc, "auc": cv_auc}],
                  index=["UCN"]).to_csv(
@@ -341,14 +355,19 @@ def main():
     print(f"  train={tr_m.sum():,}  test={te_m.sum():,}", flush=True)
 
     # Slice the already-computed sample weights to the training rows
-    w_tr = sample_weights[tr_m] if sample_weights is not None else None
+    w_tr   = sample_weights[tr_m] if sample_weights is not None else None
+    seqs_tr = seqs_all[tr_m] if seqs_all is not None else None
+    seqs_te = seqs_all[te_m] if seqs_all is not None else None
     if w_tr is not None:
         print(f"  Time weights: decay={args.recent_weight}  "
               f"recent/old ratio={w_tr.max()/w_tr.min():.1f}x", flush=True)
-    ucn.fit(X_tr_s, y_tr, sample_weights=w_tr)
+    if seqs_tr is not None:
+        print(f"  LSTM sequences: train={seqs_tr.shape}  test={seqs_te.shape}",
+              flush=True)
+    ucn.fit(X_tr_s, y_tr, sample_weights=w_tr, seqs=seqs_tr)
 
-    pred  = ucn.predict(X_te_s)
-    prob  = ucn.predict_proba(X_te_s)[:, 1]
+    pred  = ucn.predict(X_te_s, seqs=seqs_te)
+    prob  = ucn.predict_proba(X_te_s, seqs=seqs_te)[:, 1]
     acc   = accuracy(y_te, pred)
     auc   = roc_auc(y_te, prob)
     print(f"  Test  acc={acc:.4f}  auc={auc:.4f}")

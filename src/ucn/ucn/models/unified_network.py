@@ -92,11 +92,12 @@ class UnifiedCourseNetwork:
 
         # Meta layer
         H_last  = cfg.hidden_sizes[-1]
-        # Branch E: LSTM
+        # Branch E: LSTM — processes the full feature vector (price + sentiment)
         if cfg.use_lstm:
-            H_l = cfg.lstm_hidden
-            s_l = math.sqrt(2.0 / (dp + H_l))
-            self.params['lstm_W'] = rng.standard_normal((dp,  4*H_l)) * s_l
+            H_l   = cfg.lstm_hidden
+            lstm_d = d   # LSTM sees all features including sentiment column
+            s_l   = math.sqrt(2.0 / (lstm_d + H_l))
+            self.params['lstm_W'] = rng.standard_normal((lstm_d,  4*H_l)) * s_l
             self.params['lstm_U'] = rng.standard_normal((H_l, 4*H_l)) * s_l
             self.params['lstm_b'] = np.zeros(4 * H_l)
 
@@ -230,9 +231,9 @@ class UnifiedCourseNetwork:
         g['mu_nb']    = (-dX_n / c['sig']).sum(0)
         g['lsig_nb']  = (-dX_n * c['X_n']).sum(0)
 
-        # Branch D
+        # Branch D — sentiment occupies exactly K columns after the MLP block
         if cfg.use_sent:
-            d_sent  = dc[:, 2*K+H:]
+            d_sent  = dc[:, 2*K+H:2*K+H+K]
             dz_sent = d_sent * c['a_sent'] * (1 - c['a_sent'])
             g['W_sent'] = c['X_sent'].T @ dz_sent
             g['b_sent'] = dz_sent.sum(0)
