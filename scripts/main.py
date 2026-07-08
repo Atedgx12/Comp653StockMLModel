@@ -84,6 +84,10 @@ def parse_args():
     p.add_argument("--no-sent",     action="store_true")
     p.add_argument("--checkpoint",  default=None)
     p.add_argument("--cv-only",     action="store_true")
+    p.add_argument("--skip-cv",     action="store_true",
+                   help="Skip cross validation and go straight to the full "
+                        "retrain and held out test. Useful once the CV numbers "
+                        "are already known.")
     p.add_argument("--n-cv-splits", type=int,   default=5)
     p.add_argument("--cv-frac",     type=float, default=0.70,
                    help="Fraction of the earliest dates used for the CV "
@@ -474,44 +478,47 @@ def main():
     # 5c. Walk-forward CV — recompute unique_dates after any LSTM alignment
     unique_dates = np.sort(np.unique(dates))   # re-derived from current dates
 
-    cut    = unique_dates[int(args.cv_frac * len(unique_dates))]
-    sub_m  = dates <= cut
-    w_sub  = sample_weights[sub_m] if sample_weights is not None else None
-    seqs_sub = seqs_all[sub_m] if seqs_all is not None else None
-
-    # The label looks horizon trading days ahead, but the CV runs on
-    # stride subsampled dates, so the purge must be expressed in kept date
-    # positions.  Rounding up guarantees the whole label window is removed.
-    purge_positions = int(np.ceil(args.horizon / max(args.stride, 1)))
-
-    if args.use_cpcv:
-        print(f"\n[CV] Combinatorial purged CV on {sub_m.sum():,} rows "
-              f"(first {args.cv_frac:.0%} of dates) ...", flush=True)
-        cv_acc, cv_auc = purged_cpcv(
-            X_sel[sub_m], y_all[sub_m], dates[sub_m],
-            cfg_cv, n_groups=args.cpcv_groups,
-            n_test_groups=args.cpcv_test_groups,
-            embargo_frac=args.embargo_frac,
-            sample_weights=w_sub,
-            seqs=seqs_sub,
-            purge=purge_positions)
+    if args.skip_cv:
+        print("\n--skip-cv flag set. Jumping to full retrain.", flush=True)
     else:
-        print(f"\n[CV] Walk-forward on {sub_m.sum():,} rows "
-              f"(first {args.cv_frac:.0%} of dates) ...", flush=True)
-        cv_acc, cv_auc = walk_forward_cv(
-            X_sel[sub_m], y_all[sub_m], dates[sub_m],
-            cfg_cv, n_splits=args.n_cv_splits,
-            sample_weights=w_sub,
-            seqs=seqs_sub,
-            purge=purge_positions)
+        cut    = unique_dates[int(args.cv_frac * len(unique_dates))]
+        sub_m  = dates <= cut
+        w_sub  = sample_weights[sub_m] if sample_weights is not None else None
+        seqs_sub = seqs_all[sub_m] if seqs_all is not None else None
 
-    pd.DataFrame([{"acc": cv_acc, "auc": cv_auc}],
-                 index=["UCN"]).to_csv(
-        os.path.join(OUT_DIR, "cv_results_unified.csv"))
+        # The label looks horizon trading days ahead, but the CV runs on
+        # stride subsampled dates, so the purge must be expressed in kept date
+        # positions.  Rounding up guarantees the whole label window is removed.
+        purge_positions = int(np.ceil(args.horizon / max(args.stride, 1)))
 
-    if args.cv_only:
-        print("--cv-only flag set. Stopping after CV.")
-        return
+        if args.use_cpcv:
+            print(f"\n[CV] Combinatorial purged CV on {sub_m.sum():,} rows "
+                  f"(first {args.cv_frac:.0%} of dates) ...", flush=True)
+            cv_acc, cv_auc = purged_cpcv(
+                X_sel[sub_m], y_all[sub_m], dates[sub_m],
+                cfg_cv, n_groups=args.cpcv_groups,
+                n_test_groups=args.cpcv_test_groups,
+                embargo_frac=args.embargo_frac,
+                sample_weights=w_sub,
+                seqs=seqs_sub,
+                purge=purge_positions)
+        else:
+            print(f"\n[CV] Walk-forward on {sub_m.sum():,} rows "
+                  f"(first {args.cv_frac:.0%} of dates) ...", flush=True)
+            cv_acc, cv_auc = walk_forward_cv(
+                X_sel[sub_m], y_all[sub_m], dates[sub_m],
+                cfg_cv, n_splits=args.n_cv_splits,
+                sample_weights=w_sub,
+                seqs=seqs_sub,
+                purge=purge_positions)
+
+        pd.DataFrame([{"acc": cv_acc, "auc": cv_auc}],
+                     index=["UCN"]).to_csv(
+            os.path.join(OUT_DIR, "cv_results_unified.csv"))
+
+        if args.cv_only:
+            print("--cv-only flag set. Stopping after CV.")
+            return
 
     # 6. Full retrain — 80/20 temporal split
     print("\n[Train] Full retrain on entire dataset ...", flush=True)

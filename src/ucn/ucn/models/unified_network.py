@@ -437,7 +437,7 @@ class UnifiedCourseNetwork:
                 no_improve += 1
 
             if cfg.verbose and (epoch + 1) % cfg.verbose == 0:
-                acc_tr  = accuracy(y_tr, self.predict(X_tr))
+                acc_tr  = accuracy(y_tr, self.predict(X_tr, seqs=seqs_tr))
                 marker  = " *" if no_improve == 0 else ""
                 print(f"  Epoch {epoch+1:4d}/{cfg.epochs}  "
                       f"CE={ep_loss/n_b:.5f}  acc={acc_tr:.4f}  "
