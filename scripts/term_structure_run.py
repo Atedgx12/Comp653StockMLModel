@@ -146,10 +146,35 @@ def main():
                               epochs=args.epochs, patience=30, verbose=20)
     net.fit(Xtr, Ytr)
     P = net.predict_proba(Xte)
+    coupled_auc = [roc_auc(Yte[:, j], P[:, j]) for j in range(len(horizons))]
 
-    print("\n=== Per-horizon test AUC ===")
+    # Independent baseline: train one separate single horizon model per
+    # horizon, with no coupling, so we can compare each horizon on its own
+    # against the jointly coupled model.
+    print("\n[Train] Independent single-horizon models (one per horizon) ...",
+          flush=True)
+    indep_auc = []
     for j, h in enumerate(horizons):
-        print(f"  {h:>4}d   AUC={roc_auc(Yte[:, j], P[:, j]):.4f}")
+        m = VolTermStructureNet(horizons=[h], hidden_sizes=(128, 64),
+                                smooth_lambda=0.0, epochs=args.epochs,
+                                patience=30, verbose=0)
+        m.fit(Xtr, Ytr[:, [j]])
+        p = m.predict_proba(Xte)[:, 0]
+        a = roc_auc(Yte[:, j], p)
+        indep_auc.append(a)
+        print(f"  {h:>4}d independent model  test-AUC={a:.4f}", flush=True)
+
+    print("\n=== Per-horizon test AUC: independent vs coupled ===")
+    print(f"{'Horizon':>8} {'Independent':>12} {'Coupled':>10} {'Delta':>8}")
+    print("-" * 42)
+    for j, h in enumerate(horizons):
+        d = coupled_auc[j] - indep_auc[j]
+        print(f"{h:>7}d {indep_auc[j]:>12.4f} {coupled_auc[j]:>10.4f} "
+              f"{d:>+8.4f}")
+    print(f"{'mean':>8} {np.mean(indep_auc):>12.4f} "
+          f"{np.mean(coupled_auc):>10.4f} "
+          f"{np.mean(coupled_auc)-np.mean(indep_auc):>+8.4f}")
+
     curv = float(np.mean((P[:, 2:] - 2*P[:, 1:-1] + P[:, :-2])**2))
     print(f"\n  Term-structure curvature on test: {curv:.5f} "
           f"(lower = smoother coupled curve)")
