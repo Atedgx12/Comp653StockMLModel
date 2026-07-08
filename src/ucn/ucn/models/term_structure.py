@@ -219,7 +219,7 @@ class VolTermStructureNet:
 
         for epoch in range(self.epochs):
             self._idx_rng.shuffle(idx)
-            ep_bce = 0.0; n_b = 0
+            ep_bce = 0.0; ep_acc = 0.0; n_b = 0
             for s in range(0, len(X_tr), self.batch_size):
                 b = to_device(idx[s:s + self.batch_size])
                 c = self._forward(X_tr[b], training=True)
@@ -228,6 +228,8 @@ class VolTermStructureNet:
                 Pb = c["P"]; eps = 1e-12
                 ep_bce += float(to_cpu(-(Y_tr[b]*np.log(Pb+eps)
                                          + (1-Y_tr[b])*np.log(1-Pb+eps)).mean()))
+                Pbc = to_cpu(Pb); Ybc = to_cpu(Y_tr[b])
+                ep_acc += float(((Pbc >= 0.5) == (Ybc >= 0.5)).mean())
                 n_b += 1
 
             c_val = self._forward(X_val, training=False)
@@ -240,6 +242,7 @@ class VolTermStructureNet:
             Pc = to_cpu(P); Yc = to_cpu(Y_val)
             val_acc = float(((Pc >= 0.5) == (Yc >= 0.5)).mean())
             tr_bce = ep_bce / max(n_b, 1)
+            tr_acc = ep_acc / max(n_b, 1)
             if bce < best_val - 1e-6:
                 best_val = bce
                 best_params = {k: v.copy() for k, v in self.params.items()}
@@ -249,8 +252,9 @@ class VolTermStructureNet:
             if self.verbose and (epoch + 1) % self.verbose == 0:
                 marker = " *" if no_improve == 0 else ""
                 print(f"  Epoch {epoch+1:4d}/{self.epochs}  "
-                      f"train_BCE={tr_bce:.5f}  val_BCE={bce:.5f}  "
-                      f"val_acc={val_acc:.4f}{marker}", flush=True)
+                      f"CE={tr_bce:.5f}  acc={tr_acc:.4f}  "
+                      f"val_CE={bce:.5f}  val_acc={val_acc:.4f}  "
+                      f"LR={self.lr:.2e}{marker}", flush=True)
             if self.patience and no_improve >= self.patience:
                 if self.verbose:
                     print(f"  Early stop epoch {epoch+1}", flush=True)

@@ -29,6 +29,17 @@ from ucn.training.metrics import roc_auc
 OUT_DIR = os.environ.get("UCN_OUT", ROOT)
 
 
+def ascii_bars(labels, values, title, width=46, fmt="{:.4f}"):
+    """Print a horizontal bar chart to the terminal."""
+    print("\n" + title, flush=True)
+    vmax = max(values) if max(values) > 0 else 1.0
+    vmin = min(min(values), 0.0)
+    span = (vmax - vmin) or 1.0
+    for lab, v in zip(labels, values):
+        n = int(round(width * (v - vmin) / span))
+        print(f"  {str(lab):>6} | {'#' * n:<{width}} {fmt.format(v)}", flush=True)
+
+
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--start", default="2010-01-01")
@@ -83,7 +94,8 @@ def build_multihorizon_labels(close, index, ticker_col, horizons):
     key["_order"] = np.arange(len(key))
     merged = key.merge(lab, on=["date", "ticker"], how="left") \
                 .sort_values("_order")
-    return merged[[f"y{h}" for h in horizons]].values
+    mean_vol = [float(allf[f"h{h}"].mean()) for h in horizons]
+    return merged[[f"y{h}" for h in horizons]].values, mean_vol
 
 
 def purged_split(dates, cv_frac, purge):
@@ -126,7 +138,10 @@ def main():
     horizons = DEFAULT_HORIZONS
     print(f"\n[Labels] Building forward volatility labels at horizons "
           f"{horizons} ...", flush=True)
-    Y = build_multihorizon_labels(close, dates, ticker_col, horizons)
+    Y, mean_vol = build_multihorizon_labels(close, dates, ticker_col, horizons)
+    ascii_bars([f"{h}d" for h in horizons], mean_vol,
+               "[Data] Mean daily realized volatility by horizon (term structure shape):",
+               fmt="{:.5f}")
 
     # Drop rows where any horizon label is missing (near the end of the sample).
     keep = ~np.isnan(Y).any(axis=1)
@@ -143,7 +158,7 @@ def main():
     print("\n[Train] Coupled term structure model ...", flush=True)
     net = VolTermStructureNet(horizons=horizons, hidden_sizes=(128, 64),
                               smooth_lambda=args.smooth_lambda,
-                              epochs=args.epochs, patience=30, verbose=20)
+                              epochs=args.epochs, patience=150, verbose=20)
     net.fit(Xtr, Ytr)
     P = net.predict_proba(Xte)
     coupled_auc = [roc_auc(Yte[:, j], P[:, j]) for j in range(len(horizons))]
@@ -174,6 +189,9 @@ def main():
     print(f"{'mean':>8} {np.mean(indep_auc):>12.4f} "
           f"{np.mean(coupled_auc):>10.4f} "
           f"{np.mean(coupled_auc)-np.mean(indep_auc):>+8.4f}")
+
+    ascii_bars([f"{h}d" for h in horizons], coupled_auc,
+               "[Graph] Coupled per-horizon test AUC across 1/5/10/30/90/180 days:")
 
     curv = float(np.mean((P[:, 2:] - 2*P[:, 1:-1] + P[:, :-2])**2))
     print(f"\n  Term-structure curvature on test: {curv:.5f} "

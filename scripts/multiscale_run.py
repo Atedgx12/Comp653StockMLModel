@@ -27,6 +27,18 @@ OUT_DIR = os.environ.get("UCN_OUT", ROOT)
 T_MAX = 20   # cap on timesteps per branch
 
 
+def ascii_bars(labels, values, title, width=46, fmt="{:.4f}"):
+    """Print a horizontal bar chart to the terminal."""
+    print("\n" + title, flush=True)
+    vmax = max(values) if max(values) > 0 else 1.0
+    vmin = min(min(values), 0.0)
+    span = (vmax - vmin) or 1.0
+    for lab, v in zip(labels, values):
+        n = int(round(width * (v - vmin) / span))
+        bar = "#" * n
+        print(f"  {str(lab):>6} | {bar:<{width}} {fmt.format(v)}", flush=True)
+
+
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--start", default="2010-01-01")
@@ -128,7 +140,10 @@ def build_labels(close, index, ticker_col, horizons):
     key = pd.DataFrame({"date": pd.to_datetime(index), "ticker": ticker_col})
     key["_order"] = np.arange(len(key))
     merged = key.merge(lab, on=["date", "ticker"], how="left").sort_values("_order")
-    return merged[[f"y{h}" for h in horizons]].values
+    # Mean daily realized volatility per horizon, the actual term structure
+    # shape of the data before the median split into labels.
+    mean_vol = [float(allf[f"h{h}"].mean()) for h in horizons]
+    return merged[[f"y{h}" for h in horizons]].values, mean_vol
 
 
 def main():
@@ -162,7 +177,12 @@ def main():
 
     print("[Labels] Forward volatility at horizons "
           f"{windows} ...", flush=True)
-    Y = build_labels(close, index, ticker_col, windows)
+    Y, mean_vol = build_labels(close, index, ticker_col, windows)
+
+    # Show the actual volatility term structure shape of the data.
+    ascii_bars([f"{w}d" for w in windows], mean_vol,
+               "[Data] Mean daily realized volatility by horizon (term structure shape):",
+               fmt="{:.5f}")
 
     print("[Sequences] Building six day-window branches ...", flush=True)
     seqs, valid = build_multiscale_sequences(close, vol, index, ticker_col, windows)
@@ -197,13 +217,16 @@ def main():
     net = MultiScaleTermStructureNet(windows=windows, hidden=24,
                                      trunk_sizes=(128, 64),
                                      smooth_lambda=args.smooth_lambda,
-                                     epochs=args.epochs, patience=25, verbose=20)
+                                     epochs=args.epochs, patience=150, verbose=20)
     net.fit(seq_tr, Ytr)
     P = net.predict_proba(seq_te)
 
     print("\n=== Per-horizon test AUC (multi-scale) ===")
-    for b, w in enumerate(windows):
-        print(f"  {w:>4}d   AUC={roc_auc(Yte[:, b], P[:, b]):.4f}")
+    aucs = [roc_auc(Yte[:, b], P[:, b]) for b in range(len(windows))]
+    for w, a in zip(windows, aucs):
+        print(f"  {w:>4}d   AUC={a:.4f}")
+    ascii_bars([f"{w}d" for w in windows], aucs,
+               "[Graph] Per-horizon test AUC across 1/5/10/30/90/180 days:")
     curv = float(np.mean((P[:, 2:] - 2*P[:, 1:-1] + P[:, :-2])**2))
     print(f"\n  Term-structure curvature on test: {curv:.5f}")
 
