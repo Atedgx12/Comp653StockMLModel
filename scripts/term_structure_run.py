@@ -48,37 +48,36 @@ def build_multihorizon_labels(close, index, ticker_col, horizons):
 
     For each ticker I compute forward realized volatility at every horizon,
     then rank it across the cross section on each date and split at the median.
-    The result is a matrix with one column per horizon aligned row for row with
-    the feature matrix.
+    The labels are aligned to the feature rows by a merge on the date and
+    ticker pair, which keeps the date types consistent and avoids the silent
+    mismatch a multi index reindex can produce.
     """
-    idx_frames = []
+    rows = []
     for ticker in close.columns:
         c = close[ticker].dropna()
         if len(c) < 300:
             continue
         r1 = np.log(c / c.shift(1))
-        per_h = {}
+        d = {"date": c.index, "ticker": ticker}
         for h in horizons:
-            per_h[h] = r1.rolling(h).std().shift(-h)
-        df = pd.DataFrame(per_h)
-        df["_ticker"] = ticker
-        idx_frames.append(df)
-    allf = pd.concat(idx_frames)
-    # Rank each horizon cross sectionally per date, then median split.
-    Y = {}
-    for h in horizons:
-        Y[h] = allf[h].groupby(allf.index).rank(pct=True)
+            d[f"h{h}"] = r1.rolling(h).std().shift(-h).values
+        rows.append(pd.DataFrame(d))
+    allf = pd.concat(rows, ignore_index=True)
 
-    # Align to the requested feature rows by (date, ticker).
-    key = pd.MultiIndex.from_arrays([index, ticker_col])
-    out = np.full((len(index), len(horizons)), np.nan)
-    for j, h in enumerate(horizons):
-        s = Y[h].copy()
-        s.index = pd.MultiIndex.from_arrays([allf.index, allf["_ticker"]])
-        vals = s.reindex(key).values
-        out[:, j] = (vals >= 0.5).astype(float)
-        out[np.isnan(vals), j] = np.nan
-    return out
+    # Cross sectional median split per date for each horizon.
+    for h in horizons:
+        rank = allf.groupby("date")[f"h{h}"].rank(pct=True)
+        allf[f"y{h}"] = (rank >= 0.5).astype(float)
+        allf.loc[allf[f"h{h}"].isna(), f"y{h}"] = np.nan
+    lab = allf[["date", "ticker"] + [f"y{h}" for h in horizons]]
+
+    # Align to the feature rows in their original order via a left merge.
+    key = pd.DataFrame({"date": pd.to_datetime(index),
+                        "ticker": ticker_col})
+    key["_order"] = np.arange(len(key))
+    merged = key.merge(lab, on=["date", "ticker"], how="left") \
+                .sort_values("_order")
+    return merged[[f"y{h}" for h in horizons]].values
 
 
 def purged_split(dates, cv_frac, purge):
