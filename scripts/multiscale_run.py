@@ -83,6 +83,8 @@ def parse_args():
                    help="Use cosine warm restarts with Adam moment reset.")
     p.add_argument("--restart-period", type=int, default=120,
                    help="Epochs per cosine cycle when warm restarts are on.")
+    p.add_argument("--no-decision", action="store_true",
+                   help="Disable the decision layer and per-ticker ledger.")
     p.add_argument("--emit-json", default=None,
                    help="Write the per-horizon results to this JSON path.")
     return p.parse_args()
@@ -344,6 +346,7 @@ def run(args):
 
     seqs = [s[keep] for s in seqs]
     Y = Y[keep]; Yret = Yret[keep]
+    tk_all = np.asarray(ticker_col)[keep]
     index = index[keep]
     print(f"  valid rows: {keep.sum():,}   branch shapes: "
           f"{[s.shape for s in seqs]}", flush=True)
@@ -437,6 +440,46 @@ def run(args):
     curv = float(np.mean((P[:, 2:] - 2*P[:, 1:-1] + P[:, :-2])**2))
     print(f"\n  Term-structure curvature on test: {curv:.5f}")
     _report_bands(windows, bands, Rte, "d")
+
+    # Decision layer: turn the calibrated test bands into choices, score them
+    # against the realized prices, and accumulate a combined per-ticker ledger.
+    if not getattr(args, "no_decision", False):
+        try:
+            from ucn.models.decision import (choose_batch, score_batch,
+                                              TickerLedger)
+            tk_te = tk_all[te]
+            date_te = pd.to_datetime(index[te])
+            p0 = np.array([close[tk].get(dt, np.nan)
+                           for tk, dt in zip(tk_te, date_te)], dtype=float)
+            rows = []
+            for b, w in enumerate(windows):
+                ch = choose_batch(bands[:, b, :], p0)
+                ch = score_batch(ch, p0 * np.exp(Rte[:, b]))
+                ch["ticker"] = tk_te; ch["date"] = date_te
+                ch["horizon"] = w; ch["source"] = "auto"
+                rows.append(ch)
+            batch = pd.concat(rows, ignore_index=True).dropna(
+                subset=["p0", "actual"])
+            ledger_path = os.path.join(OUT_DIR, "ticker_ledger.parquet")
+            ledger = TickerLedger(ledger_path)
+            ledger.append(batch)
+            ledger.df = ledger.df.drop_duplicates(
+                subset=["ticker", "date", "horizon", "source"], keep="last")
+            ledger.save()
+            cov = float(pd.to_numeric(batch["in_band"], errors="coerce").mean())
+            mae = float(batch["abs_error"].mean())
+            mpe = float(batch["pct_error"].abs().mean())
+            print(f"\n[Decision] scored {len(batch):,} choices on the test set  "
+                  f"in-band={cov:.3f}  mean abs error=${mae:.2f}  "
+                  f"mean abs pct error={mpe:.4f}", flush=True)
+            deltas = ledger.per_ticker_delta()
+            nz = sum(1 for v in deltas.values() if v > 0)
+            print(f"[Decision] ledger holds {len(ledger.df):,} rows across "
+                  f"{ledger.df['ticker'].nunique()} tickers; per-ticker "
+                  f"conformal deltas computed ({nz} nonzero) to hone future "
+                  f"band widths. Saved to {ledger_path}", flush=True)
+        except Exception as e:
+            print(f"[Decision] skipped: {e}", flush=True)
 
     save_path = os.path.join(OUT_DIR, "multiscale_daily.npz")
     net.save(save_path)
