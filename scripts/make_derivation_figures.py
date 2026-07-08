@@ -422,6 +422,52 @@ def fig_branch_lstm():
     fig.tight_layout(); fig.savefig(os.path.join(OUT, "branch_lstm.png")); plt.close(fig)
 
 
+# 0f. Volatility clustering visualization -----------------------------------
+def fig_clustering():
+    banner("Volatility clustering: autocorrelation of returns vs squared returns")
+    rng = np.random.default_rng(7)
+    T = 1600
+    omega, alpha, beta = 2e-6, 0.10, 0.88      # GARCH(1,1), persistence 0.98
+    r = np.zeros(T); s2 = np.zeros(T)
+    s2[0] = omega / (1 - alpha - beta)
+    for t in range(1, T):
+        s2[t] = omega + alpha * r[t-1]**2 + beta * s2[t-1]
+        r[t] = np.sqrt(s2[t]) * rng.standard_normal()
+
+    def acf(x, K):
+        x = x - x.mean(); v = float(np.dot(x, x))
+        return np.array([float(np.dot(x[:-k], x[k:]) / v) for k in range(1, K+1)])
+    K = 40
+    acf_r = acf(r, K); acf_r2 = acf(r**2, K)
+    conf = 1.96 / np.sqrt(T)
+    print(f"  mean ACF raw returns (lags 1-10)  = {acf_r[:10].mean():+.4f}")
+    print(f"  mean ACF squared returns (1-10)   = {acf_r2[:10].mean():+.4f}")
+    print(f"  squared-return ACF still positive at lag 40 = {acf_r2[-1]:+.4f}")
+
+    fig = plt.figure(figsize=(7.6, 5.6))
+    gs = fig.add_gridspec(2, 2, height_ratios=[1, 1])
+    axt = fig.add_subplot(gs[0, :])
+    axt.plot(r, color="#3182bd", lw=0.6)
+    axt.set_title("Simulated daily returns: large moves cluster with large moves")
+    axt.set_xlabel("day"); axt.set_ylabel("return $r_t$")
+    a1 = fig.add_subplot(gs[1, 0])
+    a1.bar(range(1, K+1), acf_r, color="#9ecae1")
+    a1.axhline(0, color="k", lw=0.6)
+    a1.axhline(conf, color="#d62728", ls="--", lw=0.8)
+    a1.axhline(-conf, color="#d62728", ls="--", lw=0.8)
+    a1.set_ylim(-0.15, 0.55)
+    a1.set_title("ACF of returns\n(direction, near zero)", fontsize=9)
+    a1.set_xlabel("lag k"); a1.set_ylabel("autocorrelation")
+    a2 = fig.add_subplot(gs[1, 1])
+    a2.bar(range(1, K+1), acf_r2, color="#e6550d")
+    a2.axhline(0, color="k", lw=0.6)
+    a2.axhline(conf, color="#d62728", ls="--", lw=0.8)
+    a2.set_ylim(-0.15, 0.55)
+    a2.set_title("ACF of squared returns\n(volatility, slow positive decay)", fontsize=9)
+    a2.set_xlabel("lag k")
+    fig.tight_layout(); fig.savefig(os.path.join(OUT, "clustering.png")); plt.close(fig)
+
+
 # 1. Logistic sigmoid with worked points ------------------------------------
 def fig_sigmoid():
     banner("Worked example: logistic branch")
@@ -716,6 +762,7 @@ if __name__ == "__main__":
     fig_lifecycle()
     fig_fusion_graph()
     fig_drift()
+    fig_clustering()
     fig_branch_lr()
     fig_branch_nb()
     fig_branch_mlp()

@@ -125,6 +125,28 @@ autocorrelation decays only slowly, so today's turbulence forecasts tomorrow's,
 \quad\text{for many lags } k .
 \]
 
+Figure \ref{fig:clustering} makes this visible. The top panel is a simulated
+daily return series where calm stretches and turbulent stretches are clearly
+separated rather than mixed at random. The lower panels are the autocorrelation
+functions that separate the two signals. The autocorrelation of the raw returns
+sits inside the noise band at every lag, which is the direction being
+unpredictable, while the autocorrelation of the squared returns stays well above
+the band and decays only slowly, which is the volatility being predictable. On
+this series the raw return autocorrelation averages about $-0.01$ over the first
+ten lags while the squared return autocorrelation averages about $0.30$ and is
+still near $0.20$ at lag forty.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\textwidth]{figures/derivations/clustering.png}
+\caption{Volatility clustering. The returns cluster into calm and turbulent
+regimes, the autocorrelation of returns is inside the significance band and so
+carries almost no signal about direction, and the autocorrelation of squared
+returns is large and slowly decaying, which is the persistent signal the model
+exploits.}
+\label{fig:clustering}
+\end{figure}
+
 This persistence is intrinsic to how information and trading arrive in clusters,
 and it means the conditional variance is a smooth and slowly changing process
 rather than noise. That is exactly the property a learner can exploit, so the
