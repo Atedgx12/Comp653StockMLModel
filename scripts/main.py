@@ -85,6 +85,11 @@ def parse_args():
     p.add_argument("--checkpoint",  default=None)
     p.add_argument("--cv-only",     action="store_true")
     p.add_argument("--n-cv-splits", type=int,   default=5)
+    p.add_argument("--cv-frac",     type=float, default=0.70,
+                   help="Fraction of the earliest dates used for the CV "
+                        "development window. The rest is the untouched tail. "
+                        "Larger values give CV more data and more regimes but "
+                        "shrink the held out portion.")
     p.add_argument("--use-store",   action="store_true",
                    help="Load features from DuckDB FeatureStore instead of "
                         "recomputing them. Requires --store-path.")
@@ -469,7 +474,7 @@ def main():
     # 5c. Walk-forward CV — recompute unique_dates after any LSTM alignment
     unique_dates = np.sort(np.unique(dates))   # re-derived from current dates
 
-    cut    = unique_dates[int(0.50 * len(unique_dates))]
+    cut    = unique_dates[int(args.cv_frac * len(unique_dates))]
     sub_m  = dates <= cut
     w_sub  = sample_weights[sub_m] if sample_weights is not None else None
     seqs_sub = seqs_all[sub_m] if seqs_all is not None else None
@@ -481,7 +486,7 @@ def main():
 
     if args.use_cpcv:
         print(f"\n[CV] Combinatorial purged CV on {sub_m.sum():,} rows "
-              f"(first 50% of dates) ...", flush=True)
+              f"(first {args.cv_frac:.0%} of dates) ...", flush=True)
         cv_acc, cv_auc = purged_cpcv(
             X_sel[sub_m], y_all[sub_m], dates[sub_m],
             cfg_cv, n_groups=args.cpcv_groups,
@@ -492,7 +497,7 @@ def main():
             purge=purge_positions)
     else:
         print(f"\n[CV] Walk-forward on {sub_m.sum():,} rows "
-              f"(first 50% of dates) ...", flush=True)
+              f"(first {args.cv_frac:.0%} of dates) ...", flush=True)
         cv_acc, cv_auc = walk_forward_cv(
             X_sel[sub_m], y_all[sub_m], dates[sub_m],
             cfg_cv, n_splits=args.n_cv_splits,

@@ -125,10 +125,49 @@ def download_prices(
     tickers: List[str],
     start: str = "2015-01-01",
     end: Optional[str] = None,
+def _yf_download_field(tickers: List[str], field: str,
+                       start: str, end: str,
+                       batch_size: int = 50) -> Optional[pd.DataFrame]:
+    """Download one OHLCV field for a list of tickers in batches.
+
+    Returns a wide DataFrame indexed by date with one column per ticker, or
+    None when nothing could be downloaded.  Columns that are mostly empty are
+    dropped so a delisted or illiquid name does not pollute the panel.
+    """
+    frames = []
+    batches = [tickers[i:i+batch_size] for i in range(0, len(tickers), batch_size)]
+    for bi, batch in enumerate(batches):
+        try:
+            raw = yf.download(batch, start=start, end=end,
+                              auto_adjust=True, progress=False, threads=True)
+            col = (raw[field] if isinstance(raw.columns, pd.MultiIndex)
+                   else raw)
+            ok  = col.dropna(axis=1, thresh=int(0.7*len(col))).columns.tolist()
+            frames.append(col[ok])
+        except Exception as e:
+            print(f"  batch {bi+1} failed: {e}", flush=True)
+        print(f"  batch {bi+1}/{len(batches)} done", flush=True)
+
+    if not frames:
+        return None
+    out = pd.concat(frames, axis=1)
+    out = out.loc[:, ~out.columns.duplicated()]
+    return out
+
+
+def download_prices(
+    tickers: List[str],
+    start: str = "2015-01-01",
+    end: Optional[str] = None,
     cache_dir: Optional[str] = None,
     batch_size: int = 50,
 ) -> pd.DataFrame:
-    """Download (or load cached) adjusted close prices."""
+    """Download (or load cached) adjusted close prices.
+
+    When a cache exists but is missing some of the requested tickers, only the
+    missing names are downloaded and merged, so growing the universe from 315
+    to the full index does not force a full refetch of everything.
+    """
     cache_dir = cache_dir or _DEFAULT_CACHE
     end       = end or datetime.today().strftime("%Y-%m-%d")
     cache     = os.path.join(cache_dir, "close_cache_full.parquet")
@@ -136,28 +175,25 @@ def download_prices(
     if os.path.exists(cache):
         print("Loading cached price data ...", flush=True)
         close = pd.read_parquet(cache)
+        missing = [t for t in tickers if t not in close.columns]
+        if missing:
+            print(f"  {close.shape[1]} cached, fetching {len(missing)} new "
+                  f"tickers ...", flush=True)
+            new = _yf_download_field(missing, "Close", start, end, batch_size)
+            if new is not None and new.shape[1] > 0:
+                # Align new tickers to the existing dense date index and merge.
+                new = new.reindex(close.index).ffill()
+                close = close.join(new, how="left")
+                close = close.loc[:, ~close.columns.duplicated()]
+                close.to_parquet(cache)
+                print(f"  Merged: now {close.shape[1]} tickers.", flush=True)
         print(f"  {close.shape[1]} tickers x {close.shape[0]} days.")
         return close
 
     print(f"Downloading {len(tickers)} tickers ...", flush=True)
-    frames = []
-    batches = [tickers[i:i+batch_size] for i in range(0, len(tickers), batch_size)]
-    for bi, batch in enumerate(batches):
-        try:
-            raw = yf.download(batch, start=start, end=end,
-                              auto_adjust=True, progress=False, threads=True)
-            c = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw
-            ok = c.dropna(axis=1, thresh=int(0.7*len(c))).columns.tolist()
-            frames.append(c[ok])
-        except Exception as e:
-            print(f"  batch {bi+1} failed: {e}", flush=True)
-        print(f"  batch {bi+1}/{len(batches)} done", flush=True)
-
-    if not frames:
+    close = _yf_download_field(tickers, "Close", start, end, batch_size)
+    if close is None:
         raise RuntimeError("No price data downloaded.")
-
-    close = pd.concat(frames, axis=1)
-    close = close.loc[:, ~close.columns.duplicated()]
     close = close.dropna(axis=1, thresh=int(0.7*len(close))).ffill().dropna()
     close.to_parquet(cache)
     print(f"  Saved {close.shape[1]} tickers x {close.shape[0]} days.")
@@ -179,29 +215,25 @@ def download_volume(
     if os.path.exists(cache):
         print("Loading cached volume data ...", flush=True)
         vol = pd.read_parquet(cache)
+        missing = [t for t in tickers if t not in vol.columns]
+        if missing:
+            print(f"  {vol.shape[1]} cached, fetching {len(missing)} new "
+                  f"tickers ...", flush=True)
+            new = _yf_download_field(missing, "Volume", start, end, batch_size)
+            if new is not None and new.shape[1] > 0:
+                new = new.reindex(vol.index).ffill().fillna(0)
+                vol = vol.join(new, how="left")
+                vol = vol.loc[:, ~vol.columns.duplicated()]
+                vol.to_parquet(cache)
+                print(f"  Merged: now {vol.shape[1]} tickers.", flush=True)
         print(f"  {vol.shape[1]} tickers x {vol.shape[0]} days.")
         return vol
 
     print(f"Downloading volume for {len(tickers)} tickers ...", flush=True)
-    frames = []
-    batches = [tickers[i:i+batch_size] for i in range(0, len(tickers), batch_size)]
-    for bi, batch in enumerate(batches):
-        try:
-            raw = yf.download(batch, start=start, end=end,
-                              auto_adjust=True, progress=False, threads=True)
-            v = raw["Volume"] if isinstance(raw.columns, pd.MultiIndex) else raw
-            ok = v.dropna(axis=1, thresh=int(0.7*len(v))).columns.tolist()
-            frames.append(v[ok])
-        except Exception as e:
-            print(f"  batch {bi+1} failed: {e}", flush=True)
-        print(f"  batch {bi+1}/{len(batches)} done", flush=True)
-
-    if not frames:
+    vol = _yf_download_field(tickers, "Volume", start, end, batch_size)
+    if vol is None:
         print("No volume data downloaded.")
         return None
-
-    vol = pd.concat(frames, axis=1)
-    vol = vol.loc[:, ~vol.columns.duplicated()]
     vol = vol.dropna(axis=1, thresh=int(0.7*len(vol))).ffill().fillna(0)
     vol.to_parquet(cache)
     print(f"  Saved {vol.shape[1]} tickers x {vol.shape[0]} days.")
