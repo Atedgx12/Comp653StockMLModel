@@ -68,19 +68,23 @@ def download_minute(tickers, cache):
 
 def within_day_fwd_vol(r1, day_id, h):
     """Forward realized vol over the next h minutes, within the same day."""
-    fwd = r1.rolling(h).std().shift(-h)
+    if h <= 1:
+        # One minute realized volatility is the absolute next minute return,
+        # since the standard deviation of a single observation is undefined.
+        fwd = r1.shift(-1).abs()
+    else:
+        fwd = r1.rolling(h).std().shift(-h)
     # Invalidate windows whose end crosses into the next trading day.
     end_day = pd.Series(day_id, index=r1.index).shift(-h)
     fwd[end_day.values != day_id] = np.nan
     return fwd
 
 
-def main():
-    args = parse_args()
+def run(args):
+    """Run the intraday model and return per-horizon results."""
     print("=" * 65)
     print(" Intraday Volatility Term Structure (1m to 240m horizons)")
     print("=" * 65, flush=True)
-
     tickers = get_tickers()[:args.n_tickers]
     close = download_minute(tickers, os.path.join(OUT_DIR, "minute_close.parquet"))
     tickers = close.columns.tolist()
@@ -191,6 +195,14 @@ def main():
         print(f"  {w:>4}m   AUC={a:.4f}")
     ascii_bars([f"{w}m" for w in WINDOWS_MIN], aucs,
                "[Graph] Intraday per-horizon test AUC (1m to 240m):")
+
+    # Horizon in trading days (390 minutes per trading day) for a common axis.
+    return [{"label": f"{w}m", "days": w / 390.0, "mean_vol": mv, "auc": a}
+            for w, mv, a in zip(WINDOWS_MIN, mean_vol, aucs)]
+
+
+def main():
+    run(parse_args())
 
 
 if __name__ == "__main__":

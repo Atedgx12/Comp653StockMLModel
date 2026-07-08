@@ -146,8 +146,8 @@ def build_labels(close, index, ticker_col, horizons):
     return merged[[f"y{h}" for h in horizons]].values, mean_vol
 
 
-def main():
-    args = parse_args()
+def run(args):
+    """Run the daily multi-scale model and return per-horizon results."""
     print("=" * 65)
     print(" Multi-Scale Volatility Term Structure (window LSTM branches)")
     print("=" * 65, flush=True)
@@ -229,6 +229,15 @@ def main():
                "[Graph] Per-horizon test AUC across 1/5/10/30/90/180 days:")
     curv = float(np.mean((P[:, 2:] - 2*P[:, 1:-1] + P[:, :-2])**2))
     print(f"\n  Term-structure curvature on test: {curv:.5f}")
+
+    # One result per horizon, with the horizon expressed in trading days so it
+    # can be merged with the intraday horizons on a common axis.
+    return [{"label": f"{w}d", "days": float(w), "mean_vol": mv, "auc": a}
+            for w, mv, a in zip(windows, mean_vol, aucs)]
+
+
+def main():
+    run(parse_args())
 
 
 if __name__ == "__main__":
