@@ -143,9 +143,9 @@ def run(args):
             yv = np.asarray(yv, dtype=float)
             if np.isnan(yv).any():
                 continue
-            # Windows must stay within the same trading day.
-            if day_id[pos - max(WINDOWS_MIN)] != day_id[pos]:
-                continue
+            # The forward label already stays within the trading day. The
+            # lookback window may cross the overnight gap and is padded when
+            # short, so no same-day restriction is needed on the history.
             hist = arr[:pos + 1]
             for b, w in enumerate(WINDOWS_MIN):
                 seg = hist[-w:]
