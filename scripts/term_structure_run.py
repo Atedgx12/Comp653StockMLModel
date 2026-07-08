@@ -60,7 +60,13 @@ def build_multihorizon_labels(close, index, ticker_col, horizons):
         r1 = np.log(c / c.shift(1))
         d = {"date": c.index, "ticker": ticker}
         for h in horizons:
-            d[f"h{h}"] = r1.rolling(h).std().shift(-h).values
+            if h <= 1:
+                # One day realized volatility is the absolute daily return,
+                # since the standard deviation of a single observation is
+                # undefined.
+                d[f"h{h}"] = r1.shift(-1).abs().values
+            else:
+                d[f"h{h}"] = r1.rolling(h).std().shift(-h).values
         rows.append(pd.DataFrame(d))
     allf = pd.concat(rows, ignore_index=True)
 
