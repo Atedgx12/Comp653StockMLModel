@@ -21,7 +21,7 @@ import yfinance as yf
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
-from ucn.data.ingestion import get_tickers
+from ucn.data.ingestion import get_tickers, download_prices, download_volume
 from ucn.models.multiscale import MultiScaleTermStructureNet
 from ucn.training.metrics import roc_auc
 
@@ -83,6 +83,8 @@ def parse_args():
                    help="Use cosine warm restarts with Adam moment reset.")
     p.add_argument("--restart-period", type=int, default=120,
                    help="Epochs per cosine cycle when warm restarts are on.")
+    p.add_argument("--no-context", action="store_true",
+                   help="Disable the cross sectional context branch.")
     p.add_argument("--emit-json", default=None,
                    help="Write the per-horizon results to this JSON path.")
     return p.parse_args()
@@ -217,6 +219,7 @@ def run(args):
     Yrows = []
     Rrows = []
     times = []
+    tk_rows = []
     print("[Sequences] Building six bar-window branches ...", flush=True)
     # Prebuild an O(1) label lookup keyed by (ticker, time) holding both the
     # volatility labels and the forward returns for the quantile bands.
@@ -256,12 +259,14 @@ def run(args):
             Yrows.append(yv)
             Rrows.append(rv)
             times.append(tm)
+            tk_rows.append(t)
 
     B = len(WINDOWS_MIN)
     seq_arr = [np.asarray(seqs[b], dtype=np.float32) for b in range(B)]
     Y = np.asarray(Yrows, dtype=np.float32)
     R = np.asarray(Rrows, dtype=np.float32)
     times = np.array(times)
+    tk_arr = np.array(tk_rows, dtype=object)
     print(f"  samples: {len(Y):,}   branch shapes: {[s.shape for s in seq_arr]}",
           flush=True)
 
@@ -279,6 +284,24 @@ def run(args):
     Ytr, Yte = Y[tr], Y[te]
     Rtr, Rte = R[tr], R[te]
 
+    # Cross sectional context: each intraday row gets its day's daily context
+    # vector (the hierarchy and regime signal), constant within the day.
+    ctx_tr = ctx_te = None
+    if not getattr(args, "no_context", False):
+        try:
+            from multiscale_run import build_context_features
+            dclose = download_prices(tickers, start="2010-01-01", cache_dir=OUT_DIR)
+            dvol = download_volume(tickers, cache_dir=OUT_DIR)
+            sdates = np.array([np.datetime64(pd.Timestamp(tm).normalize())
+                               for tm in times])
+            ctx_full, ctx_names = build_context_features(dclose, dvol, sdates, tk_arr)
+            print(f"[Context] intraday context ({len(ctx_names)} features) "
+                  f"aligned by ticker and day", flush=True)
+            ctx_tr = np.nan_to_num(ctx_full[tr], nan=0.5).astype(np.float32)
+            ctx_te = np.nan_to_num(ctx_full[te], nan=0.5).astype(np.float32)
+        except Exception as e:
+            print(f"[Context] intraday context skipped: {e}", flush=True)
+
     print("\n[Train] Intraday multi-scale coupled model (vol + quantile bands) ...",
           flush=True)
     net = MultiScaleTermStructureNet(windows=WINDOWS_MIN, hidden=24,
@@ -287,9 +310,9 @@ def run(args):
                                      epochs=args.epochs, patience=150, verbose=20,
                                      warm_restarts=getattr(args, "warm_restarts", False),
                                      restart_period=getattr(args, "restart_period", 120))
-    net.fit(seq_tr, Ytr, Rtr)
-    P = net.predict_proba(seq_te)
-    bands = net.predict_bands(seq_te)
+    net.fit(seq_tr, Ytr, Rtr, ctx=ctx_tr)
+    P = net.predict_proba(seq_te, ctx=ctx_te)
+    bands = net.predict_bands(seq_te, ctx=ctx_te)
 
     print("\n=== Per-horizon intraday test AUC ===")
     aucs = [roc_auc(Yte[:, b], P[:, b]) for b in range(B)]
