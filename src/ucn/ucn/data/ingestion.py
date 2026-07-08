@@ -3,6 +3,7 @@ Data ingestion: ticker universe, price download, volume, VADER sentiment.
 Extracted from pipeline_course.py — all caching logic preserved.
 """
 import os
+import io
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -51,20 +52,73 @@ _SP500_TICKERS = [
 
 
 def get_tickers(use_wikipedia: bool = True) -> List[str]:
-    """Return the S&P 500 ticker universe. Falls back to hardcoded list."""
+    """Return the S&P 500 ticker universe. Falls back to hardcoded list.
+
+    Wikipedia blocks requests that arrive without a browser User-Agent, which
+    returns HTTP 403.  I fetch the page myself with a normal browser header and
+    hand the HTML to pandas, then fall back to a stable CSV of constituents,
+    and only then to the hardcoded list.
+    """
     if use_wikipedia:
-        try:
-            tables  = pd.read_html(
-                "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
-                flavor="lxml")
-            tickers = (tables[0]["Symbol"]
-                       .str.replace(".", "-", regex=False)
-                       .tolist())
+        tickers = _tickers_from_wikipedia()
+        if tickers:
             print(f"Wikipedia: {len(tickers)} tickers.")
             return tickers
-        except Exception as e:
-            print(f"Wikipedia failed ({e}). Using hardcoded list.")
+        tickers = _tickers_from_csv()
+        if tickers:
+            print(f"CSV fallback: {len(tickers)} tickers.")
+            return tickers
+        print("Ticker fetch failed. Using hardcoded list.")
     return _SP500_TICKERS
+
+
+def _tickers_from_wikipedia() -> Optional[List[str]]:
+    """Fetch S&P 500 symbols from Wikipedia using a browser User-Agent."""
+    import urllib.request
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/124.0 Safari/537.36"),
+        "Accept": "text/html,application/xhtml+xml",
+    }
+    try:
+        req  = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+        tables  = pd.read_html(io.StringIO(html), flavor="lxml")
+        tickers = (tables[0]["Symbol"]
+                   .astype(str)
+                   .str.replace(".", "-", regex=False)
+                   .str.strip()
+                   .tolist())
+        return tickers or None
+    except Exception as e:
+        print(f"Wikipedia failed ({e}).")
+        return None
+
+
+def _tickers_from_csv() -> Optional[List[str]]:
+    """Fetch S&P 500 symbols from a stable public CSV of constituents."""
+    import urllib.request
+    url = ("https://raw.githubusercontent.com/datasets/"
+           "s-and-p-500-companies/main/data/constituents.csv")
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            csv_text = resp.read().decode("utf-8", errors="replace")
+        df = pd.read_csv(io.StringIO(csv_text))
+        col = "Symbol" if "Symbol" in df.columns else df.columns[0]
+        tickers = (df[col]
+                   .astype(str)
+                   .str.replace(".", "-", regex=False)
+                   .str.strip()
+                   .tolist())
+        return tickers or None
+    except Exception as e:
+        print(f"CSV source failed ({e}).")
+        return None
 
 
 def download_prices(
