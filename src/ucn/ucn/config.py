@@ -54,6 +54,17 @@ class UCNConfig:
     # Row subsampling step to reduce label autocorrelation.
     # stride=1 keeps every row; stride=horizon keeps only non-overlapping rows.
     # For horizon>20 consider stride=5 to 10 as a compromise.
+    # ── LSTM Branch E (Module 10) ──────────────────────────────────────
+    use_lstm: bool = False
+    # Add an LSTM branch that processes a lookback window of past feature
+    # vectors, capturing momentum trajectory rather than a single snapshot.
+
+    lstm_lookback: int = 20
+    # Number of past trading days fed into the LSTM (T in h_t = f(x_t, h_{t-1})).
+
+    lstm_hidden: int = 32
+    # Size of the LSTM hidden state and cell state.
+
     # ── Sample weighting ─────────────────────────────────────────────────
     recent_weight_decay: float = 0.0
     # Exponential time-weighting to counter regime shift.

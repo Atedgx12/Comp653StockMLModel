@@ -70,6 +70,13 @@ def parse_args():
                         "recomputing them. Requires --store-path.")
     p.add_argument("--store-path",  default="D:/StockModel/features.duckdb",
                    help="Path to the DuckDB feature store.")
+    p.add_argument("--use-lstm",    action="store_true",
+                   help="Add LSTM Branch E that processes a lookback window "
+                        "of past feature vectors (professor's RNN equation).")
+    p.add_argument("--lstm-lookback", type=int, default=20,
+                   help="Number of past trading days fed into the LSTM.")
+    p.add_argument("--lstm-hidden",   type=int, default=32,
+                   help="LSTM hidden state size.")
     return p.parse_args()
 
 
@@ -246,6 +253,9 @@ def main():
         meta_dropout=min(args.dropout * 0.5, 0.3),
         verbose=0,
         use_fgsm=True,
+        use_lstm=args.use_lstm,
+        lstm_lookback=args.lstm_lookback,
+        lstm_hidden=args.lstm_hidden,
     )
     cfg_full = UCNConfig(
         hidden_sizes=(256, 128, 64),
@@ -260,7 +270,30 @@ def main():
         meta_dropout=min(args.dropout * 0.5, 0.3),
         verbose=20,
         use_fgsm=True,
+        use_lstm=args.use_lstm,
+        lstm_lookback=args.lstm_lookback,
+        lstm_hidden=args.lstm_hidden,
     )
+
+    # Build LSTM sequence tensor if requested
+    seqs_all = None
+    if args.use_lstm:
+        from ucn.models.lstm import build_sequences
+        print(f"\n[LSTM] Building sequence tensor "
+              f"(lookback={args.lstm_lookback}) ...", flush=True)
+        # Reconstruct a DataFrame with date index to pass to build_sequences
+        import pandas as pd
+        X_tmp = pd.DataFrame(X_sel, index=dates)
+        seqs_all, seq_mask = build_sequences(X_tmp, lookback=args.lstm_lookback)
+        # Align X_sel, y_all, dates, sample_weights to valid sequence rows
+        X_sel          = X_sel[seq_mask]
+        y_all          = y_all[seq_mask]
+        dates          = dates[seq_mask]
+        if sample_weights is not None:
+            sample_weights = sample_weights[seq_mask]
+        print(f"  Sequence tensor: {seqs_all.shape}  "
+              f"(dropped {(~seq_mask).sum()} rows without full history)",
+              flush=True)
 
     # 5. Walk-forward CV (on first 50% of dates — covers more regimes)
     unique_dates = np.sort(np.unique(dates))

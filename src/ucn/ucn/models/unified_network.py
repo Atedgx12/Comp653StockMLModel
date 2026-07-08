@@ -92,7 +92,15 @@ class UnifiedCourseNetwork:
 
         # Meta layer
         H_last  = cfg.hidden_sizes[-1]
-        meta_in = K + K + H_last + (K if cfg.use_sent else 0)
+        # Branch E: LSTM
+        if cfg.use_lstm:
+            H_l = cfg.lstm_hidden
+            s_l = math.sqrt(2.0 / (dp + H_l))
+            self.params['lstm_W'] = rng.standard_normal((dp,  4*H_l)) * s_l
+            self.params['lstm_U'] = rng.standard_normal((H_l, 4*H_l)) * s_l
+            self.params['lstm_b'] = np.zeros(4 * H_l)
+
+        meta_in = K + K + H_last + (K if cfg.use_sent else 0) + (cfg.lstm_hidden if cfg.use_lstm else 0)
         self.params['W_meta'] = rng.standard_normal((meta_in, K)) * math.sqrt(2.0/meta_in)
         self.params['b_meta'] = np.zeros(K)
 
@@ -102,7 +110,8 @@ class UnifiedCourseNetwork:
 
     # ── Forward pass ─────────────────────────────────────────────────────
 
-    def _forward(self, X: np.ndarray, training: bool = True) -> dict:
+    def _forward(self, X: np.ndarray, training: bool = True,
+                 seqs: np.ndarray = None) -> dict:
         cfg = self.cfg
         if cfg.use_sent:
             X_price = X[:, :-1]
@@ -144,6 +153,31 @@ class UnifiedCourseNetwork:
             a_s = sigmoid(z_s)
             c.update({'X_sent': X_sent, 'z_sent': z_s, 'a_sent': a_s})
             parts.append(a_s)
+
+        # Branch E: LSTM — processes a lookback window of past feature vectors.
+        # seqs shape: (N, T, dp)  h_T shape: (N, lstm_hidden)
+        if cfg.use_lstm and seqs is not None:
+            W_l, U_l, b_l = (self.params['lstm_W'],
+                             self.params['lstm_U'],
+                             self.params['lstm_b'])
+            H_l    = cfg.lstm_hidden
+            N_s, T = seqs.shape[0], seqs.shape[1]
+            lstm_h = np.zeros((N_s, T + 1, H_l))
+            lstm_c = np.zeros((N_s, T + 1, H_l))
+            lstm_g = np.zeros((N_s, T, 4 * H_l))
+            for t in range(T):
+                z_t  = seqs[:, t, :] @ W_l + lstm_h[:, t, :] @ U_l + b_l
+                lstm_g[:, t, :] = z_t
+                f_t  = sigmoid(z_t[:,    :H_l])
+                i_t  = sigmoid(z_t[:,   H_l:2*H_l])
+                gt_t = np.tanh(z_t[:, 2*H_l:3*H_l])
+                o_t  = sigmoid(z_t[:, 3*H_l:])
+                lstm_c[:, t+1, :] = f_t * lstm_c[:, t, :] + i_t * gt_t
+                lstm_h[:, t+1, :] = o_t * np.tanh(lstm_c[:, t+1, :])
+            h_T = lstm_h[:, T, :]
+            c.update({'lstm_h': lstm_h, 'lstm_c': lstm_c,
+                      'lstm_g': lstm_g, 'seqs': seqs, 'h_T': h_T})
+            parts.append(h_T)
 
         # Meta layer
         cat = np.hstack(parts)
@@ -203,6 +237,54 @@ class UnifiedCourseNetwork:
             g['W_sent'] = c['X_sent'].T @ dz_sent
             g['b_sent'] = dz_sent.sum(0)
 
+        # Branch E: LSTM BPTT
+        if cfg.use_lstm and 'lstm_h' in c:
+            H_l    = cfg.lstm_hidden
+            lstm_h = c['lstm_h']; lstm_c = c['lstm_c']
+            lstm_g = c['lstm_g']; seqs   = c['seqs']
+            T      = seqs.shape[1]
+            # gradient from meta-layer: last columns after sent
+            sent_k = K if cfg.use_sent else 0
+            d_hT   = dc[:, 2*K+H+sent_k:]   # (N, lstm_hidden)
+
+            dW_l = np.zeros_like(self.params['lstm_W'])
+            dU_l = np.zeros_like(self.params['lstm_U'])
+            db_l = np.zeros_like(self.params['lstm_b'])
+
+            d_h_next = d_hT.copy()
+            d_c_next = np.zeros_like(d_hT)
+
+            for t in reversed(range(T)):
+                z    = lstm_g[:, t, :]
+                f_t  = sigmoid(z[:,    :H_l])
+                i_t  = sigmoid(z[:,   H_l:2*H_l])
+                gt_t = np.tanh(z[:, 2*H_l:3*H_l])
+                o_t  = sigmoid(z[:, 3*H_l:])
+                tanh_c = np.tanh(lstm_c[:, t+1, :])
+
+                d_o  = d_h_next * tanh_c
+                d_c  = d_h_next * o_t * (1.0 - tanh_c**2) + d_c_next
+                d_f  = d_c * lstm_c[:, t, :]
+                d_i  = d_c * gt_t
+                d_g  = d_c * i_t
+                d_cp = d_c * f_t
+
+                dz_f = d_f * f_t  * (1 - f_t)
+                dz_i = d_i * i_t  * (1 - i_t)
+                dz_g = d_g * (1 - gt_t**2)
+                dz_o = d_o * o_t  * (1 - o_t)
+                dz   = np.concatenate([dz_f, dz_i, dz_g, dz_o], axis=1)
+
+                dW_l       += seqs[:, t, :].T @ dz
+                dU_l       += lstm_h[:, t, :].T @ dz
+                db_l       += dz.sum(0)
+                d_h_next    = dz @ self.params['lstm_U'].T
+                d_c_next    = d_cp
+
+            g['lstm_W'] = dW_l
+            g['lstm_U'] = dU_l
+            g['lstm_b'] = db_l
+
         # Branch C
         dm = d_mlp; mlp = c['mlp']
         for i in range(len(cfg.hidden_sizes), 0, -1):
@@ -258,7 +340,9 @@ class UnifiedCourseNetwork:
     # ── Training loop ────────────────────────────────────────────────────
 
     def fit(self, X: np.ndarray, y: np.ndarray,
-            sample_weights: np.ndarray = None) -> "UnifiedCourseNetwork":
+            sample_weights: np.ndarray = None,
+            seqs: np.ndarray = None) -> "UnifiedCourseNetwork":
+        """seqs : (N, T, d) optional LSTM sequence input aligned with X."""
         cfg = self.cfg
         K   = len(np.unique(y))
         if not self.params:
@@ -270,6 +354,9 @@ class UnifiedCourseNetwork:
         # Slice sample weights to match training split
         w_tr = (sample_weights[:len(X)-n_val]
                 if sample_weights is not None else None)
+        # Slice sequence tensor to match training split
+        seqs_tr  = seqs[:len(X)-n_val]  if seqs  is not None else None
+        seqs_val = seqs[len(X)-n_val:]  if seqs  is not None else None
         idx_tr = np.arange(len(X_tr))
 
         noise_scale = (X_tr.std(axis=0) * cfg.noise_frac
@@ -300,6 +387,7 @@ class UnifiedCourseNetwork:
                 b    = idx_tr[s:s + cfg.batch_size]
                 X_b  = (X_tr[b] + self._rng.standard_normal(X_tr[b].shape) * noise_scale
                         if noise_scale is not None else X_tr[b])
+                s_b  = seqs_tr[b] if seqs_tr is not None else None
                 Y_oh = np.eye(K)[y_tr[b].astype(int)]
                 # Sample weights are applied to the gradient delta AFTER
                 # the softmax-CE shortcut, not to the target labels.
@@ -311,27 +399,27 @@ class UnifiedCourseNetwork:
                     step  = cfg.fgsm_eps / max(cfg.pgd_steps, 1)
                     X_adv = X_b.copy()
                     for _ in range(cfg.pgd_steps):
-                        c_tmp  = self._forward(X_adv, training=False)
+                        c_tmp  = self._forward(X_adv, training=False, seqs=s_b)
                         _, dX_s = self._backward(c_tmp, Y_oh)
                         dX_full = (np.hstack([dX_s, np.zeros((len(b), 1))])
                                    if cfg.use_sent else dX_s)
                         X_adv = X_adv + step * np.sign(dX_full)
-                    c_adv = self._forward(X_adv, training=True)
+                    c_adv = self._forward(X_adv, training=True, seqs=s_b)
                     g, _  = self._backward(c_adv, Y_oh, sample_weights=w_b)
                 else:
-                    c    = self._forward(X_b, training=True)
+                    c    = self._forward(X_b, training=True, seqs=s_b)
                     g, _ = self._backward(c, Y_oh, sample_weights=w_b)
 
                 # Unweighted CE for monitoring so values stay interpretable
                 loss = cross_entropy_softmax(
-                    self._forward(X_b, training=False)['Y_hat'], Y_oh)
+                    self._forward(X_b, training=False, seqs=s_b)['Y_hat'], Y_oh)
                 self._update(g, lr_t)
                 ep_loss += loss; n_b += 1
 
             self.loss_history.append(ep_loss / n_b)
 
             Y_oh_val     = np.eye(K)[y_val.astype(int)]
-            c_val        = self._forward(X_val, training=False)
+            c_val        = self._forward(X_val, training=False, seqs=seqs_val)
             val_ce       = cross_entropy_softmax(c_val['Y_hat'], Y_oh_val)
             val_acc_curr = accuracy(y_val, np.argmax(c_val['Y_hat'], axis=1))
             self.val_loss_history.append(val_ce)
@@ -367,11 +455,13 @@ class UnifiedCourseNetwork:
                       flush=True)
         return self
 
-    def predict_proba(self, X: np.ndarray) -> np.ndarray:
-        return self._forward(X, training=False)['Y_hat']
+    def predict_proba(self, X: np.ndarray,
+                      seqs: np.ndarray = None) -> np.ndarray:
+        return self._forward(X, training=False, seqs=seqs)['Y_hat']
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        return np.argmax(self.predict_proba(X), axis=1)
+    def predict(self, X: np.ndarray,
+                seqs: np.ndarray = None) -> np.ndarray:
+        return np.argmax(self.predict_proba(X, seqs=seqs), axis=1)
 
     # ── Checkpoint persistence ───────────────────────────────────────────
 
