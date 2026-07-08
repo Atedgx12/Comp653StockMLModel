@@ -77,14 +77,55 @@ def parse_args():
     p.add_argument("--stack-period", default="60d")
     p.add_argument("--stack-min-train-cov", type=float, default=0.02,
                    help="Skip stacking if train coverage is below this fraction.")
+    p.add_argument("--no-context", action="store_true",
+                   help="Disable the static cross sectional context branch.")
+    p.add_argument("--warm-restarts", action="store_true",
+                   help="Use cosine warm restarts with Adam moment reset.")
+    p.add_argument("--restart-period", type=int, default=120,
+                   help="Epochs per cosine cycle when warm restarts are on.")
     p.add_argument("--emit-json", default=None,
                    help="Write the per-horizon results to this JSON path.")
     return p.parse_args()
 
 
+def build_context_features(close, vol, index, ticker_col):
+    """Per (ticker, date) cross sectional context features fused into the trunk.
+
+    These are the rich signal the strong cross sectional model used: multi window
+    realized volatility, momentum, market relative strength, and a volatility
+    ratio, each ranked per date so the context is market neutral. The market
+    relative columns carry the hierarchy signal, and the model gates them.
+    """
+    eps = 1e-9
+    rets = np.log(close / close.shift(1))
+    mkt = rets.mean(axis=1)                       # equal weight market return
+    rows = []
+    for t in close.columns:
+        c = close[t].dropna()
+        if len(c) < 300:
+            continue
+        r = np.log(c / c.shift(1))
+        exc = r - mkt.reindex(c.index)
+        d = {"date": c.index, "ticker": t}
+        for w in (20, 60, 120, 252):
+            d[f"vol{w}"] = r.rolling(w).std().values
+            d[f"mom{w}"] = (c / c.shift(w) - 1.0).values
+            d[f"rs_market{w}"] = exc.rolling(w).mean().values
+        d["vol_ratio"] = (r.rolling(20).std() / (r.rolling(60).std() + eps)).values
+        rows.append(pd.DataFrame(d))
+    long = pd.concat(rows, ignore_index=True)
+    featcols = [col for col in long.columns if col not in ("date", "ticker")]
+    for col in featcols:
+        long[col] = long.groupby("date")[col].rank(pct=True)
+    key = pd.DataFrame({"date": pd.to_datetime(index), "ticker": ticker_col})
+    key["_o"] = np.arange(len(key))
+    merged = key.merge(long, on=["date", "ticker"], how="left").sort_values("_o")
+    ctx = merged[featcols].values.astype(np.float32)
+    return ctx, featcols
+
+
 def build_intraday_stack(tickers, index, ticker_col, interval, period):
     """Per (ticker, date) realized intraday volatility aligned to the daily grid.
-
     This feeds the finer scale forward as one daily feature. Returns the aligned
     values with missing entries as NaN, plus the coverage fraction over the grid.
     """
@@ -275,6 +316,16 @@ def run(args):
 
     keep = valid & ~np.isnan(Y).any(axis=1) & ~np.isnan(Yret).any(axis=1)
 
+    # Static cross sectional context (the rich hierarchy signal) fused into the
+    # trunk, built for every grid row and gated inside the model.
+    ctx_kept = None
+    if not getattr(args, "no_context", False):
+        print("[Context] Building cross sectional hierarchy features ...",
+              flush=True)
+        ctx_full, ctx_names = build_context_features(close, vol, index, ticker_col)
+        ctx_kept = ctx_full[keep]
+        print(f"  context features ({len(ctx_names)}): {ctx_names}", flush=True)
+
     # Optional stacking: feed the intraday scale forward as one daily feature.
     stack_kept = None
     if getattr(args, "stack_intraday", False):
@@ -309,6 +360,10 @@ def run(args):
     seq_te = [s[te] for s in seqs]
     Ytr, Yte = Y[tr], Y[te]
     Rtr, Rte = Yret[tr], Yret[te]
+    ctx_tr = ctx_te = None
+    if ctx_kept is not None:
+        ctx_tr = np.nan_to_num(ctx_kept[tr], nan=0.5).astype(np.float32)
+        ctx_te = np.nan_to_num(ctx_kept[te], nan=0.5).astype(np.float32)
 
     # Append the stacked intraday feature, guarded on train coverage so a
     # feature that is absent during training cannot shift the test distribution.
@@ -343,7 +398,9 @@ def run(args):
     net = MultiScaleTermStructureNet(windows=windows, hidden=24,
                                      trunk_sizes=(128, 64),
                                      smooth_lambda=args.smooth_lambda,
-                                     epochs=args.epochs, patience=150, verbose=20)
+                                     epochs=args.epochs, patience=150, verbose=20,
+                                     warm_restarts=getattr(args, "warm_restarts", False),
+                                     restart_period=getattr(args, "restart_period", 120))
 
     # Optional guarded warm start from the intraday model. The intraday window
     # sits inside the daily test period, so a naive warm start would leak the
@@ -364,9 +421,9 @@ def run(args):
         else:
             net.warm_start_from(ws, seq_tr[0].shape[2])
 
-    net.fit(seq_tr, Ytr, Rtr)
-    P = net.predict_proba(seq_te)
-    bands = net.predict_bands(seq_te)
+    net.fit(seq_tr, Ytr, Rtr, ctx=ctx_tr)
+    P = net.predict_proba(seq_te, ctx=ctx_te)
+    bands = net.predict_bands(seq_te, ctx=ctx_te)
 
     print("\n=== Per-horizon test AUC (multi-scale) ===")
     aucs = [roc_auc(Yte[:, b], P[:, b]) for b in range(len(windows))]

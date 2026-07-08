@@ -79,6 +79,10 @@ def parse_args():
     p.add_argument("--smooth-lambda", type=float, default=0.3)
     p.add_argument("--epochs", type=int, default=1500)
     p.add_argument("--cv-frac", type=float, default=0.80)
+    p.add_argument("--warm-restarts", action="store_true",
+                   help="Use cosine warm restarts with Adam moment reset.")
+    p.add_argument("--restart-period", type=int, default=120,
+                   help="Epochs per cosine cycle when warm restarts are on.")
     p.add_argument("--emit-json", default=None,
                    help="Write the per-horizon results to this JSON path.")
     return p.parse_args()
@@ -280,7 +284,9 @@ def run(args):
     net = MultiScaleTermStructureNet(windows=WINDOWS_MIN, hidden=24,
                                      trunk_sizes=(128, 64),
                                      smooth_lambda=args.smooth_lambda,
-                                     epochs=args.epochs, patience=150, verbose=20)
+                                     epochs=args.epochs, patience=150, verbose=20,
+                                     warm_restarts=getattr(args, "warm_restarts", False),
+                                     restart_period=getattr(args, "restart_period", 120))
     net.fit(seq_tr, Ytr, Rtr)
     P = net.predict_proba(seq_te)
     bands = net.predict_bands(seq_te)

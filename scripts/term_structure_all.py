@@ -58,6 +58,9 @@ def parse_args():
     p.add_argument("--warm-start-force", action="store_true")
     p.add_argument("--stack-intraday", action="store_true",
                    help="Append intraday realized volatility as a daily feature.")
+    p.add_argument("--warm-restarts", action="store_true",
+                   help="Use cosine warm restarts with Adam moment reset.")
+    p.add_argument("--restart-period", type=int, default=120)
     return p.parse_args()
 
 
@@ -113,13 +116,15 @@ def main():
         intra_args = SimpleNamespace(
             n_tickers=a.n_tickers, stride_min=a.stride_min,
             interval=a.interval, period=a.period,
-            smooth_lambda=a.smooth_lambda, epochs=a.epochs, cv_frac=a.cv_frac)
+            smooth_lambda=a.smooth_lambda, epochs=a.epochs, cv_frac=a.cv_frac,
+            warm_restarts=a.warm_restarts, restart_period=a.restart_period)
         daily_args = SimpleNamespace(
             start=a.start, stride=a.stride, ref_horizon=30,
             smooth_lambda=a.smooth_lambda, epochs=a.epochs,
             min_dollar_vol=a.min_dollar_vol, cv_frac=a.cv_frac,
             warm_start=a.warm_start, warm_start_force=a.warm_start_force,
-            stack_intraday=a.stack_intraday)
+            stack_intraday=a.stack_intraday,
+            warm_restarts=a.warm_restarts, restart_period=a.restart_period)
 
         print("\n########## INTRADAY SCALE ##########", flush=True)
         intra = intraday_run.run(intra_args)
