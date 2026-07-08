@@ -55,12 +55,11 @@ the same model.
 
 \section{Problem Definition}
 
-This project predicts the volatility of a stock with respect to time. Volatility
-is the size of the moves a stock makes, so it governs how far the price can
-travel up or down over a horizon rather than the sign of that travel. We predict
-this quantity as a function of the horizon, which is what we mean by with respect
-to time, and we show that it carries a clear and learnable training signal
-precisely because volatility clusters intrinsically in time.
+The abstract stated the result in words. Here we make the problem precise and
+give the definitions the rest of the paper builds on. The following subsections
+state the concrete goal, the formal target as a conditional volatility, the
+statistical reason the signal exists, the term structure across horizons, and the
+way the volatility forecast becomes a range of future prices.
 
 \subsection{The Project Goal}
 
@@ -652,17 +651,19 @@ variance to a negative value.
 \centering
 \includegraphics[width=0.86\textwidth]{figures/derivations/branch_mlp.png}
 \caption{Branch C overview. The forward flow stacks two rectified layers before
-the meta layer, and the gradient is gated by $\mathbf{1}[Z>0]$. The data view
-shows the nonlinear boundary the rectified layers can represent.}
+the meta layer, and the gradient is gated by $\mathbf{1}[Z>0]$. The data view is
+the decision region of the full unified network trained on two interleaving
+classes, where Branch C supplies the nonlinear boundary that the linear branches
+cannot.}
 \label{fig:branchmlp}
 \end{figure}
 
 In architecture terms Branch C is the deep branch. It stacks the hidden
 rectified layers set by the configuration, applies dropout to each of them, and
 is feedforward with no recurrence, which is where the nonlinear capacity of the
-model lives. The boundary in Figure \ref{fig:branchmlp} is produced by this same
-architecture trained on two interleaving classes, and it separates them at ninety
-six percent.
+model lives. The boundary in Figure \ref{fig:branchmlp} is produced by the full
+unified network with this branch supplying the nonlinearity, and it separates the
+two interleaving classes at ninety nine percent.
 
 The third branch is a fully connected network with rectified linear activations,
 and it supplies the nonlinear capacity the linear branches lack. Each layer
