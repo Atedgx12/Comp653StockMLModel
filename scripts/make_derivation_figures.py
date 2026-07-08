@@ -133,6 +133,259 @@ def fig_lifecycle():
     fig.tight_layout(); fig.savefig(os.path.join(OUT, "lifecycle.png")); plt.close(fig)
 
 
+# 0c. Multi-scale fusion graph ----------------------------------------------
+def fig_fusion_graph():
+    from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
+    fig, ax = plt.subplots(figsize=(8.6, 5.2))
+    ax.set_xlim(0, 12); ax.set_ylim(0, 8); ax.axis("off")
+
+    def box(x, y, w, h, text, color, fs=9):
+        ax.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.05",
+                     linewidth=1.2, edgecolor="#333333", facecolor=color))
+        ax.text(x + w / 2, y + h / 2, text, ha="center", va="center", fontsize=fs)
+
+    def arrow(x0, y0, x1, y1, color="#555555", rad=0.0):
+        ax.add_patch(FancyArrowPatch((x0, y0), (x1, y1), arrowstyle="-|>",
+                     mutation_scale=12, linewidth=1.1, color=color,
+                     connectionstyle=f"arc3,rad={rad}"))
+
+    windows = [1, 5, 10, 30, 90, 180]
+    green, orange, blue, gray = ("#c7e9c0", "#fdd0a2", "#c6dbef", "#e0e0e0")
+    xs = np.linspace(0.6, 10.0, 6)
+    bw = 1.35
+    # branch embedding nodes
+    for i, (x, w) in enumerate(zip(xs, windows)):
+        box(x, 1.0, bw, 0.9, f"LSTM {w}d\n$e_{{{i+1}}}$", green, fs=8.5)
+    # drift nodes between adjacent branches
+    for k in range(5):
+        xm = (xs[k] + xs[k+1]) / 2 + bw / 2
+        box(xm - 0.55, 2.5, 1.1, 0.7,
+            f"$\\Delta_{{{k+1}}}=e_{{{k+2}}}-e_{{{k+1}}}$", orange, fs=7)
+        arrow(xs[k] + bw, 1.9, xm - 0.1, 2.5, color="#e6550d", rad=0.1)
+        arrow(xs[k+1], 1.9, xm + 0.1, 2.5, color="#e6550d", rad=-0.1)
+    # fusion bar
+    box(1.5, 4.1, 9.0, 0.8, "fuse = concat($e_1,\\dots,e_6,\\ \\Delta_1,\\dots,\\Delta_5$)",
+        blue, fs=9)
+    for x in xs:
+        arrow(x + bw / 2, 1.9, x + bw / 2, 4.1, color="#3182bd", rad=0.0)
+    for k in range(5):
+        xm = (xs[k] + xs[k+1]) / 2 + bw / 2
+        arrow(xm, 3.2, xm, 4.1, color="#e6550d")
+    box(3.0, 5.4, 6.0, 0.8, "shared trunk (128, 64)", gray, fs=9)
+    arrow(6.0, 4.9, 6.0, 5.4)
+    box(1.5, 6.7, 4.0, 0.8, "6 volatility heads\n(curvature coupled)", green, fs=8.5)
+    box(6.5, 6.7, 4.0, 0.8, "quantile band heads\n(non-crossing + conformal)", orange, fs=8.5)
+    arrow(4.5, 6.2, 3.5, 6.7); arrow(7.5, 6.2, 8.5, 6.7)
+    ax.set_title("Multi-scale fusion graph: branch embeddings linked by drift",
+                 fontsize=12)
+    fig.tight_layout(); fig.savefig(os.path.join(OUT, "fusion_graph.png")); plt.close(fig)
+
+
+# 0d. Drift between scales, computed from the trained daily model ------------
+def fig_drift():
+    banner("Drift visualization from the trained daily model")
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from ucn.models.multiscale import MultiScaleTermStructureNet
+    from ucn.backend import to_device, to_cpu
+    windows = [1, 5, 10, 30, 90, 180]
+    cand = ["multiscale_daily.npz",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "multiscale_daily.npz"),
+            r"B:\Rice\Comp653StockMLModel\models\multiscale_daily.npz"]
+    net = None; trained = False
+    for p in cand:
+        if os.path.exists(p):
+            try:
+                net = MultiScaleTermStructureNet.load(p); trained = True; break
+            except Exception as e:
+                print("  load failed:", e); net = None
+    if net is None:
+        net = MultiScaleTermStructureNet(windows=windows, hidden=24,
+                                         trunk_sizes=(128, 64))
+        net._init_weights(7)
+    B = net.B
+    d = net.scalers[0][0].shape[0] if net.scalers else 7
+    steps = [min(w, 20) for w in net.windows]
+    rng = np.random.default_rng(0)
+    N = 512
+    vol = rng.uniform(0.5, 2.0, (N, 1, 1)).astype(np.float32)
+    seqs = [rng.standard_normal((N, steps[b], d)).astype(np.float32) * vol
+            for b in range(B)]
+    seq_dev = [to_device(s) for s in seqs]
+    if net.scalers:
+        seq_dev = net._apply_scalers(seq_dev)
+    c = net._forward(seq_dev, training=False)
+    embs = [np.asarray(to_cpu(e)) for e in c["embs"]]
+    mean_emb = np.stack([e.mean(0) for e in embs])
+    drift_norm = [float(np.mean(np.linalg.norm(embs[k+1] - embs[k], axis=1)))
+                  for k in range(B - 1)]
+    print(f"  trained={trained}  drift norms="
+          f"{[round(x, 3) for x in drift_norm]}")
+
+    fig, ax = plt.subplots(1, 2, figsize=(9.6, 3.9))
+    im = ax[0].imshow(mean_emb, aspect="auto", cmap="RdBu_r")
+    ax[0].set_yticks(range(B)); ax[0].set_yticklabels([f"{w}d" for w in net.windows])
+    ax[0].set_xlabel("hidden unit"); ax[0].set_ylabel("branch time window")
+    ax[0].set_title("Mean branch embeddings $e_b$")
+    fig.colorbar(im, ax=ax[0], fraction=0.046, pad=0.04)
+    labels = [f"{net.windows[k]}$\\to${net.windows[k+1]}d" for k in range(B - 1)]
+    ax[1].bar(labels, drift_norm, color="#e6550d")
+    ax[1].set_ylabel(r"mean drift magnitude $\|\Delta_k\|$")
+    ax[1].set_title("Drift between adjacent scales")
+    ax[1].tick_params(axis="x", rotation=25)
+    fig.tight_layout(); fig.savefig(os.path.join(OUT, "drift.png")); plt.close(fig)
+
+
+# 0e. Per-branch overview figures (structure + training-loop position + data)
+def _branch_flow(ax, blocks, grad_label):
+    """Draw a horizontal data-flow chain into the meta layer with a backward
+    gradient arrow underneath, showing the branch position in the loop."""
+    from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
+    ax.set_xlim(0, 10); ax.set_ylim(0, 3); ax.axis("off")
+    cols = ["#c6dbef", "#c7e9c0", "#fdd0a2", "#dadaeb", "#e0e0e0"]
+    n = len(blocks); h = 0.95; y = 1.55
+    meta_w = 1.05; tail = 0.5 + meta_w
+    gap = 0.5; x0 = 0.25
+    w = (9.6 - x0 - tail - (n - 1) * gap) / n
+    xs = []
+    for i, b in enumerate(blocks):
+        bx = x0 + i * (w + gap)
+        ax.add_patch(FancyBboxPatch((bx, y), w, h, boxstyle="round,pad=0.04",
+                     lw=1.1, edgecolor="#333", facecolor=cols[i % len(cols)]))
+        ax.text(bx + w / 2, y + h / 2, b, ha="center", va="center", fontsize=8)
+        xs.append((bx, bx + w))
+        if i > 0:
+            ax.add_patch(FancyArrowPatch((xs[i-1][1], y+h/2), (bx, y+h/2),
+                         arrowstyle="-|>", mutation_scale=11, color="#555"))
+    lx = xs[-1][1]
+    ax.add_patch(FancyArrowPatch((lx, y+h/2), (lx+0.5, y+h/2),
+                 arrowstyle="-|>", mutation_scale=11, color="#555"))
+    ax.add_patch(FancyBboxPatch((lx+0.55, y+0.1), meta_w, h-0.2,
+                 boxstyle="round,pad=0.04", lw=1.1, edgecolor="#333",
+                 facecolor="#fee0d2"))
+    ax.text(lx+0.55+meta_w/2, y+h/2, "meta\n$\\to$ loss", ha="center",
+            va="center", fontsize=7.5)
+    ax.add_patch(FancyArrowPatch((lx, y-0.05), (x0, y-0.05), arrowstyle="-|>",
+                 mutation_scale=12, color="#cb181d",
+                 connectionstyle="arc3,rad=0.32"))
+    ax.text((x0+lx)/2, y-0.95, f"backward gradient: {grad_label}", ha="center",
+            color="#cb181d", fontsize=8)
+
+
+def _phi(x):
+    return np.exp(-0.5 * x**2) / np.sqrt(2 * np.pi)
+
+
+def fig_branch_lr():
+    fig, ax = plt.subplots(2, 1, figsize=(7.0, 4.8),
+                           gridspec_kw={"height_ratios": [1, 1.2]})
+    _branch_flow(ax[0], ["features $x$", r"$z=w^\top x+b$", r"$\sigma(z)$",
+                         "output $a_{lr}$"], r"$(p-y)\,x$")
+    ax[0].set_title("Branch A: logistic regression, structure and loop position",
+                    fontsize=10)
+    z = np.linspace(-6, 6, 400); s = 1/(1+np.exp(-z))
+    ax[1].plot(z, s, color="#1f77b4", lw=2)
+    for zz in (-2, 0, 2):
+        pp = 1/(1+np.exp(-zz)); ax[1].scatter([zz], [pp], color="#d62728", zorder=5)
+        ax[1].annotate(f"{pp:.3f}", (zz, pp), textcoords="offset points", xytext=(6, -10))
+    ax[1].axhline(0.5, color="gray", ls="--", lw=0.8)
+    ax[1].set_xlabel("score z"); ax[1].set_ylabel("probability")
+    ax[1].set_title("Data view: the logistic map turns the score into a probability")
+    fig.tight_layout(); fig.savefig(os.path.join(OUT, "branch_lr.png")); plt.close(fig)
+
+
+def fig_branch_nb():
+    fig, ax = plt.subplots(2, 1, figsize=(7.0, 4.8),
+                           gridspec_kw={"height_ratios": [1, 1.2]})
+    _branch_flow(ax[0], ["features $x$", r"whiten $(x-\mu)/s$",
+                         r"$W\tilde x+b$", r"$\sigma(\cdot)$", "$a_{nb}$"],
+                 r"$(a_{nb}-y)$")
+    ax[0].set_title("Branch B: Gaussian naive Bayes, structure and loop position",
+                    fontsize=10)
+    x = np.linspace(-5, 6, 500)
+    m0, m1, s = -1.0, 1.6, 1.0
+    ax[1].plot(x, _phi((x-m0)/s), color="#3182bd", lw=2, label="class 0 density")
+    ax[1].plot(x, _phi((x-m1)/s), color="#e6550d", lw=2, label="class 1 density")
+    post = 1/(1+np.exp(-((m1-m0)/s**2)*x + (m1**2-m0**2)/(2*s**2)))
+    axb = ax[1].twinx()
+    axb.plot(x, post, color="#238b45", lw=2, ls="--", label=r"posterior $P(y{=}1\mid x)$")
+    axb.set_ylabel("posterior", color="#238b45")
+    ax[1].set_xlabel("feature x"); ax[1].set_ylabel("density")
+    ax[1].set_title("Data view: two Gaussians give a logistic (linear log-odds) posterior")
+    ax[1].legend(loc="upper left", fontsize=7)
+    fig.tight_layout(); fig.savefig(os.path.join(OUT, "branch_nb.png")); plt.close(fig)
+
+
+def fig_branch_mlp():
+    fig, ax = plt.subplots(2, 1, figsize=(7.0, 4.8),
+                           gridspec_kw={"height_ratios": [1, 1.2]})
+    _branch_flow(ax[0], ["features $x$", "dense + ReLU", "dense + ReLU",
+                         "output $a_{mlp}$"], r"$\delta_Z=\delta_A\odot\mathbf{1}[Z>0]$")
+    ax[0].set_title("Branch C: multilayer perceptron, structure and loop position",
+                    fontsize=10)
+    rng = np.random.default_rng(1)
+    # two interleaving classes to show nonlinear capacity
+    t = rng.uniform(0, np.pi, 200)
+    x0 = np.c_[np.cos(t)+rng.normal(0, 0.12, 200), np.sin(t)+rng.normal(0, 0.12, 200)]
+    x1 = np.c_[1-np.cos(t)+rng.normal(0, 0.12, 200), 1-np.sin(t)-0.5+rng.normal(0, 0.12, 200)]
+    ax[1].scatter(x0[:, 0], x0[:, 1], s=8, color="#3182bd", label="class 0")
+    ax[1].scatter(x1[:, 0], x1[:, 1], s=8, color="#e6550d", label="class 1")
+    xx = np.linspace(-1.4, 2.4, 100)
+    ax[1].plot(xx, 0.25 + 0.5*np.sin(1.6*xx), color="#238b45", lw=2,
+               label="nonlinear boundary")
+    ax[1].set_title("Data view: ReLU layers can bend the boundary the linear branches cannot")
+    ax[1].set_xlabel("feature 1"); ax[1].set_ylabel("feature 2")
+    ax[1].legend(loc="upper right", fontsize=7)
+    fig.tight_layout(); fig.savefig(os.path.join(OUT, "branch_mlp.png")); plt.close(fig)
+
+
+def fig_branch_sent():
+    fig, ax = plt.subplots(2, 1, figsize=(7.0, 4.8),
+                           gridspec_kw={"height_ratios": [1, 1.2]})
+    _branch_flow(ax[0], ["VADER score", r"$W_s\,s+b_s$", r"$\sigma(\cdot)$", "$a_s$"],
+                 r"$(a_s-y)$")
+    ax[0].set_title("Branch D: sentiment, structure and loop position", fontsize=10)
+    s = np.linspace(-1, 1, 400)
+    ax[1].plot(s, 1/(1+np.exp(-3.0*s)), color="#756bb1", lw=2)
+    ax[1].axvspan(-0.05, 0.05, color="gray", alpha=0.25,
+                  label="most history sits near zero")
+    ax[1].set_xlabel("VADER compound sentiment"); ax[1].set_ylabel("branch output")
+    ax[1].set_title("Data view: logistic map of sentiment, sparse before recent years")
+    ax[1].legend(loc="upper left", fontsize=7)
+    fig.tight_layout(); fig.savefig(os.path.join(OUT, "branch_sent.png")); plt.close(fig)
+
+
+def fig_branch_lstm():
+    fig, ax = plt.subplots(2, 1, figsize=(7.0, 4.8),
+                           gridspec_kw={"height_ratios": [1, 1.2]})
+    _branch_flow(ax[0], [r"sequence $x_{1..T}$", "gates $f,i,g,o$",
+                         r"cell $c_t$", r"hidden $h_T$"],
+                 r"BPTT through time")
+    ax[0].set_title("Branch E: LSTM, structure and loop position", fontsize=10)
+    # Simulate one LSTM cell on a bursty input to show the cell carrying memory.
+    T = 60
+    rng = np.random.default_rng(2)
+    x = rng.normal(0, 0.3, T)
+    x[20:26] += 2.0                              # a volatility burst
+    c = 0.0; h = 0.0; cs = []; hs = []
+    for t in range(T):
+        f = 1/(1+np.exp(-(1.5)))                 # high forget: keep memory
+        i = 1/(1+np.exp(-(1.0*abs(x[t])-0.5)))
+        g = np.tanh(x[t])
+        o = 1/(1+np.exp(-(1.0)))
+        c = f*c + i*g; h = o*np.tanh(c)
+        cs.append(c); hs.append(h)
+    ax[1].plot(x, color="#bdbdbd", lw=1, label="input $x_t$")
+    ax[1].plot(cs, color="#e6550d", lw=2, label="cell state $c_t$")
+    ax[1].plot(hs, color="#3182bd", lw=2, label="hidden $h_t$")
+    ax[1].axvspan(20, 26, color="#fee6ce", alpha=0.7, label="volatility burst")
+    ax[1].set_xlabel("time step in the lookback window"); ax[1].set_ylabel("activation")
+    ax[1].set_title("Data view: the cell state carries the burst forward as memory")
+    ax[1].legend(loc="upper right", fontsize=7)
+    fig.tight_layout(); fig.savefig(os.path.join(OUT, "branch_lstm.png")); plt.close(fig)
+
+
 # 1. Logistic sigmoid with worked points ------------------------------------
 def fig_sigmoid():
     banner("Worked example: logistic branch")
@@ -425,6 +678,13 @@ def worked_softmax_adam():
 if __name__ == "__main__":
     fig_architecture()
     fig_lifecycle()
+    fig_fusion_graph()
+    fig_drift()
+    fig_branch_lr()
+    fig_branch_nb()
+    fig_branch_mlp()
+    fig_branch_sent()
+    fig_branch_lstm()
     fig_sigmoid()
     fig_term_structure()
     fig_auc()

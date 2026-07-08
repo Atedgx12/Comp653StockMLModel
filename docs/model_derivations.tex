@@ -29,6 +29,27 @@
 
 \begin{document}
 \maketitle
+
+\begin{abstract}
+We study whether the future movement of a stock can be predicted, and we find
+that its direction is close to a coin flip while its volatility is strongly
+predictable because volatility clusters in time. We therefore predict the
+volatility of a stock as a function of the time horizon, from five minutes to one
+hundred eighty days, and we express the forecast as a calibrated range of future
+prices rather than a single number. The model runs six window LSTM branches
+linked by their drift and coupled into a smooth term structure, trained jointly
+with quantile heads that produce conformally calibrated price bands, and it is
+combined with a cross sectional network of complementary branches under a softmax
+meta layer. On out of sample data the direction target sits near an area under
+the curve of one half, while the volatility term structure rises with the horizon
+and reaches about $0.92$ intraday and $0.88$ daily, and the price bands cover
+their nominal ninety percent rate. We give the full derivation of every function
+the model uses, from the branch gradients and backpropagation through time to the
+pinball loss, the conformal coverage bound, and the ensemble, and we illustrate
+each with worked numbers and charts so the statistics and the software describe
+the same model.
+\end{abstract}
+
 \tableofcontents
 \clearpage
 
@@ -482,6 +503,15 @@ realized volatility over a long window carries the most bits, near $0.77$.}
 \clearpage
 \section{Branch A: Logistic Regression}
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.86\textwidth]{figures/derivations/branch_lr.png}
+\caption{Branch A overview. The top strip is the forward data flow into the meta
+layer and the red arrow is the backward gradient $(p-y)\,x$ that trains it. The
+lower panel is the data view of the logistic map.}
+\label{fig:branchlr}
+\end{figure}
+
 The first branch is a logistic model, and it is the cleanest place to derive
 the gradient that reappears in every later layer. The model passes a linear
 score through the logistic function, which maps the real line to a probability,
@@ -552,6 +582,15 @@ is the decision boundary at probability one half.}
 \clearpage
 \section{Branch B: Gaussian Naive Bayes}
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.86\textwidth]{figures/derivations/branch_nb.png}
+\caption{Branch B overview. The forward flow whitens the input, applies a linear
+score and a logistic, and feeds the meta layer, and the data view shows how two
+Gaussian class densities produce a logistic posterior with a linear log odds.}
+\label{fig:branchnb}
+\end{figure}
+
 The second branch assumes each feature is Gaussian within a class and that the
 features are conditionally independent, which is why it is called naive. This
 section shows why that assumption produces a linear score, which is the form the
@@ -599,6 +638,15 @@ variance to a negative value.
 \clearpage
 \section{Branch C: The Multilayer Perceptron}
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.86\textwidth]{figures/derivations/branch_mlp.png}
+\caption{Branch C overview. The forward flow stacks two rectified layers before
+the meta layer, and the gradient is gated by $\mathbf{1}[Z>0]$. The data view
+shows the nonlinear boundary the rectified layers can represent.}
+\label{fig:branchmlp}
+\end{figure}
+
 The third branch is a fully connected network with rectified linear activations,
 and it supplies the nonlinear capacity the linear branches lack. Each layer
 applies an affine map and then a rectifier, which zeroes the negative part,
@@ -631,7 +679,41 @@ by the keep probability so the expected activation is unchanged, and it is
 replayed in the backward pass so the gradient matches the forward computation.
 
 \clearpage
+\section{Branch D: Sentiment}
+
+The fourth branch reads a news sentiment score and maps it to a probability with
+a small logistic unit, so the meta layer can lean on news tone when it helps. The
+branch is deliberately simple because the sentiment signal is sparse in the
+historical record, where many days carry no scored headline and the score sits
+near zero. Writing the compound score as $s$ the branch output is
+\[
+a_{s} = \sigma\!\left(W_{s}\, s + b_{s}\right),
+\]
+and it trains with the same residual gradient $(a_s - y)$ as the logistic branch.
+The overview and the data view are shown in Figure \ref{fig:branchsent}.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.86\textwidth]{figures/derivations/branch_sent.png}
+\caption{Branch D overview. The forward flow maps the sentiment score through a
+logistic into the meta layer. The data view shows that mapping, with the shaded
+region marking where most of the history sits because scored headlines are rare
+before recent years.}
+\label{fig:branchsent}
+\end{figure}
+
+\clearpage
 \section{Branch E: The LSTM and Backpropagation Through Time}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.86\textwidth]{figures/derivations/branch_lstm.png}
+\caption{Branch E overview. The forward flow runs the gates and the cell state
+over the lookback window to a final hidden state, and the gradient is
+backpropagated through time. The data view runs one cell on a bursty input and
+shows the cell state carrying the burst forward as memory.}
+\label{fig:branchlstm}
+\end{figure}
 
 The recurrent branch reads a lookback window of feature vectors and summarizes
 it into one embedding, and it is the workhorse of the multi scale model. The
@@ -831,6 +913,20 @@ embedding of branch $b$ the drift and the fused vector are
 \text{fuse} = \bigl[\,e_1,\dots,e_B,\ \Delta_1,\dots,\Delta_{B-1}\,\bigr].
 \]
 
+The structure of this fusion is shown in Figure \ref{fig:fusion}, where the six
+branch embeddings and the five drift terms feed one shared trunk and two sets of
+heads.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.86\textwidth]{figures/derivations/fusion_graph.png}
+\caption{The multi scale fusion graph. Each branch produces an embedding, the
+drift between adjacent branches is formed explicitly, and the embeddings and
+drifts are concatenated into the trunk that feeds the volatility heads and the
+quantile band heads.}
+\label{fig:fusion}
+\end{figure}
+
 Because the drift is a real part of the forward pass, its gradient must flow
 back into the branches that formed it. Differentiating $\Delta_k = e_{k+1} - e_k$
 shows that a unit of drift gradient adds to the later embedding and subtracts
@@ -845,6 +941,22 @@ from the earlier one, which is the sign pattern in the backward split,
 This is the precise sense in which model drift across time windows is
 backpropagated as context, because the disagreement between scales feeds
 gradient into every branch that produced it.
+
+Figure \ref{fig:drift} shows the drift measured from the trained daily model.
+The left panel is the mean embedding of each branch, and the right panel is the
+magnitude of the drift between adjacent scales, which grows from the short
+windows to the long ones as the representation shifts most between the widely
+separated horizons.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.94\textwidth]{figures/derivations/drift.png}
+\caption{Drift between scales from the trained daily model on representative
+sequences. The branch embeddings on the left change smoothly with the window,
+and the drift magnitude on the right rises from the one to five day step up to
+the ninety to one hundred eighty day step.}
+\label{fig:drift}
+\end{figure}
 
 \subsection{The Curvature Coupling Penalty}
 
