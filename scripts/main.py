@@ -330,6 +330,38 @@ def lgbm_baseline(X: np.ndarray, y: np.ndarray,
     return acc, auc
 
 
+def naive_persistence_baseline(X: np.ndarray, y: np.ndarray, dates: np.ndarray,
+                               sel_cols: list, purge: int = 1,
+                               ref: str = "vol252") -> tuple:
+    """Score the held-out test using a single trailing feature, no learning.
+
+    For the volatility target this quantifies how much of the model's skill is
+    just persistence: rank names by their trailing volatility and see how well
+    that alone separates high from low forward volatility.  If the trained
+    model barely beats this, the machine learning is not adding much over the
+    obvious heuristic.  The reference feature falls back to the first available
+    trailing volatility column when the preferred one was not selected.
+    """
+    if ref not in sel_cols:
+        cands = [c for c in sel_cols if c.startswith("vol")]
+        if not cands:
+            return None
+        ref = cands[0]
+    j = sel_cols.index(ref)
+
+    unique_dates = np.sort(np.unique(dates))
+    split_idx = int(0.80 * len(unique_dates))
+    split_dt  = unique_dates[split_idx]
+    te_m = dates >= split_dt
+    # Higher trailing volatility predicts higher forward volatility, so the
+    # feature value itself is the score.  No fitting takes place.
+    score = X[te_m][:, j]
+    auc = roc_auc(y[te_m], score)
+    print(f"\n[Naive persistence]  feature={ref}  test-AUC={auc:.4f}  "
+          f"(no learning, ranks by trailing volatility)")
+    return auc, ref
+
+
 # ── Main ──────────────────────────────────────────────────────────────────
 
 def main():
@@ -440,6 +472,9 @@ def main():
         X_sel    = np.hstack([X_sel_price, sent_col])
     else:
         X_sel = X_sel_price
+
+    # Column names in X_sel order, used later for the naive persistence baseline.
+    sel_cols = list(selected) + (["sent_rank"] if has_sent else [])
 
     print(f"  Using {len(selected)} features"
           + (" + VADER sentiment" if has_sent else ""), flush=True)
@@ -607,10 +642,17 @@ def main():
     print("\n[Baseline] LightGBM-GPU ...", flush=True)
     lgb_res = lgbm_baseline(X_sel, y_all, dates, purge=purge_positions)
 
+    # 7b. Naive persistence baseline — how much of the skill is just trailing
+    # volatility. Most informative for the volatility target.
+    naive_res = naive_persistence_baseline(
+        X_sel, y_all, dates, sel_cols, purge=purge_positions)
+
     # 8. Summary
     rows = {"UnifiedCourseNetwork (PGD)": {"acc": acc, "auc": auc}}
     if lgb_res:
         rows["LightGBM-GPU"] = {"acc": lgb_res[0], "auc": lgb_res[1]}
+    if naive_res:
+        rows["Naive persistence"] = {"acc": float("nan"), "auc": naive_res[0]}
     df = pd.DataFrame(rows).T
     print("\n=== Final Results ===")
     print(df.to_string())
