@@ -294,15 +294,55 @@ def fig_conformal():
     cov1 = np.mean((ytest >= lo - delta) & (ytest <= hi + delta))
     print(f"  k={k}  delta={delta:.3f}  coverage before={cov0:.3f}  "
           f"after={cov1:.3f}  target={1-alpha:.2f}")
-    fig, ax = plt.subplots(figsize=(5.4, 3.6))
-    ax.hist(scores, bins=40, color="#c6dbef", edgecolor="#3182bd")
-    ax.axvline(delta, color="#d62728", lw=2,
-               label=fr"$\delta=s_{{(k)}}={delta:.2f}$")
-    ax.set_xlabel("conformity score s"); ax.set_ylabel("count")
-    ax.set_title(f"Conformal widening restores coverage "
-                 f"({cov0:.2f}$\\to${cov1:.2f})")
-    ax.legend()
+    # Coverage as a function of the widening, monotone and crossing the target.
+    ds = np.linspace(0.0, max(scores.max(), delta * 1.6), 200)
+    cov_curve = np.array([np.mean((ytest >= lo - d) & (ytest <= hi + d))
+                          for d in ds])
+    fig, ax = plt.subplots(1, 2, figsize=(9.2, 3.7))
+    ax[0].hist(scores, bins=40, color="#c6dbef", edgecolor="#3182bd")
+    ax[0].axvline(delta, color="#d62728", lw=2,
+                  label=fr"$\delta=s_{{(k)}}={delta:.2f}$")
+    ax[0].set_xlabel("conformity score s"); ax[0].set_ylabel("count")
+    ax[0].set_title("Calibration score distribution"); ax[0].legend()
+    ax[1].plot(ds, cov_curve, color="#3182bd", lw=2)
+    ax[1].axhline(1 - alpha, color="gray", ls="--", label="target 0.90")
+    ax[1].axvline(delta, color="#d62728", lw=2, label=fr"chosen $\delta={delta:.2f}$")
+    ax[1].scatter([delta], [cov1], color="#d62728", zorder=5)
+    ax[1].set_xlabel(r"widening $\delta$"); ax[1].set_ylabel("out of sample coverage")
+    ax[1].set_title(f"Coverage rises to target ({cov0:.2f}$\\to${cov1:.2f})")
+    ax[1].legend(loc="lower right", fontsize=9)
     fig.tight_layout(); fig.savefig(os.path.join(OUT, "conformal.png")); plt.close(fig)
+
+
+def fig_conformal_bands():
+    """Before and after picture of the band widening over the data points."""
+    rng = np.random.default_rng(3)
+    nc = 500
+    yc = rng.normal(0, 1, nc)
+    lo, hi = -1.0, 1.0
+    scores = np.maximum(lo - yc, yc - hi)
+    alpha = 0.10
+    k = int(np.ceil((1 - alpha) * (nc + 1)))
+    delta = max(np.sort(scores)[min(k, nc) - 1], 0.0)
+    n = 140
+    y = rng.normal(0, 1, n)
+    idx = np.arange(n)
+    inside = (y >= lo - delta) & (y <= hi + delta)
+    fig, ax = plt.subplots(figsize=(6.6, 3.9))
+    ax.fill_between([0, n - 1], [lo - delta] * 2, [hi + delta] * 2,
+                    color="#fdae6b", alpha=0.45,
+                    label=fr"widened band $[q_{{lo}}-\delta,\ q_{{hi}}+\delta]$")
+    ax.fill_between([0, n - 1], [lo] * 2, [hi] * 2, color="#9ecae1", alpha=0.7,
+                    label=r"original band $[q_{lo},\ q_{hi}]$")
+    ax.scatter(idx[inside], y[inside], s=14, color="#238b45", label="covered")
+    ax.scatter(idx[~inside], y[~inside], s=26, color="#cb181d", marker="x",
+               label="missed")
+    ax.set_xlabel("held out point"); ax.set_ylabel("return y")
+    ax.set_title("Widening restores coverage without moving the center")
+    ax.legend(loc="upper right", fontsize=8, ncol=2)
+    fig.tight_layout(); fig.savefig(os.path.join(OUT, "conformal_bands.png"))
+    plt.close(fig)
+
 
 
 # 7. Mutual information ranking ---------------------------------------------
@@ -391,6 +431,7 @@ if __name__ == "__main__":
     fig_pinball()
     fig_cone()
     fig_conformal()
+    fig_conformal_bands()
     fig_mi()
     fig_roc()
     worked_softmax_adam()

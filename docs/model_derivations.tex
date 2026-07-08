@@ -1060,11 +1060,26 @@ widening marked.
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.68\textwidth]{figures/derivations/conformal.png}
-\caption{Conformity scores on the calibration set. The vertical line is the
-order statistic $\delta = s_{(k)}$ that widens the band, and it lifts coverage
-from $0.68$ to $0.91$.}
+\includegraphics[width=0.92\textwidth]{figures/derivations/conformal.png}
+\caption{Left, the distribution of conformity scores on the calibration set with
+the order statistic $\delta = s_{(k)}$ marked. Right, out of sample coverage as a
+function of the widening $\delta$. Coverage increases monotonically and the
+chosen $\delta$ lands it on the target, lifting coverage from $0.68$ to $0.91$.}
 \label{fig:conformal}
+\end{figure}
+
+The widening acts on the band edges only, so it restores coverage without moving
+the center of the forecast. Figure \ref{fig:conformalbands} shows the same
+calibration on the data, with the original narrow band, the widened band, and the
+points that each one covers.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.72\textwidth]{figures/derivations/conformal_bands.png}
+\caption{The original band in blue covers too few points, and the conformal
+widening in orange extends the edges by $\delta$ so the covered fraction reaches
+the nominal level. The center of the band does not move, only its width.}
+\label{fig:conformalbands}
 \end{figure}
 The example price cone reported at the end of a run turns these return quantiles
 into prices through $P = P_0\,e^{q}$, because the model works in log return space
