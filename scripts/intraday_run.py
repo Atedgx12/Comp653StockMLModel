@@ -294,8 +294,14 @@ def run(args):
             from multiscale_run import build_context_features
             dclose = download_prices(tickers, start="2010-01-01", cache_dir=OUT_DIR)
             dvol = download_volume(tickers, cache_dir=OUT_DIR)
-            sdates = np.array([np.datetime64(pd.Timestamp(tm).normalize())
-                               for tm in times])
+            # Align each intraday timestamp to its trading day. Intraday bars are
+            # exchange local and time zone aware, so we drop the zone after
+            # keeping local wall time and normalize to local midnight, which
+            # matches the time zone naive daily dates the context is built on.
+            _tidx = pd.DatetimeIndex(pd.to_datetime(times))
+            if _tidx.tz is not None:
+                _tidx = _tidx.tz_localize(None)
+            sdates = _tidx.normalize().values
             ctx_full, ctx_names = build_context_features(dclose, dvol, sdates, tk_arr)
             print(f"[Context] intraday context ({len(ctx_names)} features) "
                   f"aligned by ticker and day", flush=True)
