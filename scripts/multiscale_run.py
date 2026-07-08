@@ -89,39 +89,41 @@ def parse_args():
 
 
 def build_context_features(close, vol, index, ticker_col):
-    """Per (ticker, date) cross sectional context features fused into the trunk.
+    """Full cross sectional context vector fused into the trunk.
 
-    These are the rich signal the strong cross sectional model used: multi window
-    realized volatility, momentum, market relative strength, and a volatility
-    ratio, each ranked per date so the context is market neutral. The market
-    relative columns carry the hierarchy signal, and the model gates them.
+    This calls the real make_features to build the same rich signal the strong
+    cross sectional model used: the multi lag returns, multi window volatility
+    and momentum, the nomadic indicators, and the hierarchy of stock versus
+    sector versus market, each ranked per date so the context is market neutral.
+    The market and sector relative columns carry the hierarchy signal, and the
+    model gates them. The features are aligned to the multi scale grid.
     """
-    eps = 1e-9
-    rets = np.log(close / close.shift(1))
-    mkt = rets.mean(axis=1)                       # equal weight market return
-    rows = []
-    for t in close.columns:
-        c = close[t].dropna()
-        if len(c) < 300:
-            continue
-        r = np.log(c / c.shift(1))
-        exc = r - mkt.reindex(c.index)
-        d = {"date": c.index, "ticker": t}
-        for w in (20, 60, 120, 252):
-            d[f"vol{w}"] = r.rolling(w).std().values
-            d[f"mom{w}"] = (c / c.shift(w) - 1.0).values
-            d[f"rs_market{w}"] = exc.rolling(w).mean().values
-        d["vol_ratio"] = (r.rolling(20).std() / (r.rolling(60).std() + eps)).values
-        rows.append(pd.DataFrame(d))
-    long = pd.concat(rows, ignore_index=True)
-    featcols = [col for col in long.columns if col not in ("date", "ticker")]
-    for col in featcols:
-        long[col] = long.groupby("date")[col].rank(pct=True)
+    from ucn.data.features import make_features
+    try:
+        from ucn.data.market_context import load_or_build_sector_map
+        sector_map = load_or_build_sector_map(close.columns.tolist())
+    except Exception:
+        sector_map = None
+    X_df, _y, feat_names, _has = make_features(
+        close, sent_df=None, vol_df=vol,
+        min_history=300, horizon=1, stride=1,
+        use_nomadic=True, use_hierarchy=True, sector_map=sector_map,
+        target="quantile")
+    feat_cols = [c for c in feat_names if c in X_df.columns]
+    df = pd.DataFrame({"date": pd.to_datetime(X_df.index),
+                       "ticker": X_df["_ticker"].values})
+    for col in feat_cols:
+        df[col] = X_df[col].values
     key = pd.DataFrame({"date": pd.to_datetime(index), "ticker": ticker_col})
     key["_o"] = np.arange(len(key))
-    merged = key.merge(long, on=["date", "ticker"], how="left").sort_values("_o")
-    ctx = merged[featcols].values.astype(np.float32)
-    return ctx, featcols
+    merged = key.merge(df, on=["date", "ticker"], how="left").sort_values("_o")
+    ctx = merged[feat_cols].values
+    cov = float(np.mean(~np.isnan(ctx).any(axis=1)))
+    print(f"  context grid coverage: {cov:.3f}", flush=True)
+    # Ranked and macro features both live in a zero to one band, so a missing
+    # row is filled with the neutral centre rather than zero.
+    ctx = np.nan_to_num(ctx, nan=0.5).astype(np.float32)
+    return ctx, feat_cols
 
 
 def build_intraday_stack(tickers, index, ticker_col, interval, period):
@@ -324,7 +326,8 @@ def run(args):
               flush=True)
         ctx_full, ctx_names = build_context_features(close, vol, index, ticker_col)
         ctx_kept = ctx_full[keep]
-        print(f"  context features ({len(ctx_names)}): {ctx_names}", flush=True)
+        print(f"  context features ({len(ctx_names)}): {ctx_names[:12]} ...",
+              flush=True)
 
     # Optional stacking: feed the intraday scale forward as one daily feature.
     stack_kept = None
