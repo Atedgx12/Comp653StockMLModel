@@ -235,7 +235,10 @@ class VolTermStructureNet:
             eps = 1e-12
             bce = float(to_cpu(-(Y_val * np.log(P + eps)
                                  + (1 - Y_val) * np.log(1 - P + eps)).mean()))
-            val_acc = float(to_cpu(((P >= 0.5) == (Y_val >= 0.5)).mean()))
+            # Accuracy on the CPU to avoid a CuPy boolean reduction kernel that
+            # fails to compile against the mismatched CUDA headers on this host.
+            Pc = to_cpu(P); Yc = to_cpu(Y_val)
+            val_acc = float(((Pc >= 0.5) == (Yc >= 0.5)).mean())
             tr_bce = ep_bce / max(n_b, 1)
             if bce < best_val - 1e-6:
                 best_val = bce

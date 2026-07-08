@@ -255,8 +255,11 @@ class MultiScaleTermStructureNet:
             P = cval["P"]; eps = 1e-12
             bce = float(to_cpu(-(Y[va]*np.log(P+eps)
                                  + (1-Y[va])*np.log(1-P+eps)).mean()))
-            # Mean accuracy across the horizon heads on the validation split.
-            val_acc = float(to_cpu(((P >= 0.5) == (Y[va] >= 0.5)).mean()))
+            # Mean accuracy across the horizon heads, computed on the CPU to
+            # avoid a CuPy boolean reduction kernel that fails to compile
+            # against the mismatched CUDA headers on this host.
+            Pc = to_cpu(P); Yc = to_cpu(Y[va])
+            val_acc = float(((Pc >= 0.5) == (Yc >= 0.5)).mean())
             tr_bce = ep_bce / max(n_b, 1)
             if bce < best - 1e-6:
                 best = bce; best_p = {k: v.copy() for k, v in self.params.items()}; bad = 0
