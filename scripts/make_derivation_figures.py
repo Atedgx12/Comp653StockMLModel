@@ -318,24 +318,40 @@ def fig_branch_nb():
 
 
 def fig_branch_mlp():
-    fig, ax = plt.subplots(2, 1, figsize=(7.0, 4.8),
-                           gridspec_kw={"height_ratios": [1, 1.2]})
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from ucn.models.mlp import MLPScratch
+    fig, ax = plt.subplots(2, 1, figsize=(7.0, 5.2),
+                           gridspec_kw={"height_ratios": [1, 1.5]})
     _branch_flow(ax[0], ["features $x$", "dense + ReLU", "dense + ReLU",
                          "output $a_{mlp}$"], r"$\delta_Z=\delta_A\odot\mathbf{1}[Z>0]$")
     ax[0].set_title("Branch C: multilayer perceptron, structure and loop position",
                     fontsize=10)
+    # Two interleaving classes, then train the project's own ReLU MLP branch.
     rng = np.random.default_rng(1)
-    # two interleaving classes to show nonlinear capacity
-    t = rng.uniform(0, np.pi, 200)
-    x0 = np.c_[np.cos(t)+rng.normal(0, 0.12, 200), np.sin(t)+rng.normal(0, 0.12, 200)]
-    x1 = np.c_[1-np.cos(t)+rng.normal(0, 0.12, 200), 1-np.sin(t)-0.5+rng.normal(0, 0.12, 200)]
-    ax[1].scatter(x0[:, 0], x0[:, 1], s=8, color="#3182bd", label="class 0")
-    ax[1].scatter(x1[:, 0], x1[:, 1], s=8, color="#e6550d", label="class 1")
-    xx = np.linspace(-1.4, 2.4, 100)
-    ax[1].plot(xx, 0.25 + 0.5*np.sin(1.6*xx), color="#238b45", lw=2,
-               label="nonlinear boundary")
-    ax[1].set_title("Data view: ReLU layers can bend the boundary the linear branches cannot")
+    m = 300
+    t = rng.uniform(0, np.pi, m)
+    x0 = np.c_[np.cos(t), np.sin(t)] + rng.normal(0, 0.11, (m, 2))
+    x1 = np.c_[1 - np.cos(t), 0.5 - np.sin(t)] + rng.normal(0, 0.11, (m, 2))
+    X = np.vstack([x0, x1]); y = np.r_[np.zeros(m), np.ones(m)].astype(int)
+    net = MLPScratch(hidden_sizes=(24, 16), lr=0.08, epochs=800,
+                     batch_size=128, verbose=0)
+    net.fit(X, y)
+    acc = float((net.predict(X) == y).mean())
+    print(f"  branch C real MLP train accuracy = {acc:.3f}")
+    xr = np.linspace(X[:, 0].min() - 0.4, X[:, 0].max() + 0.4, 220)
+    yr = np.linspace(X[:, 1].min() - 0.4, X[:, 1].max() + 0.4, 220)
+    XX, YY = np.meshgrid(xr, yr)
+    P = net.predict_proba(np.c_[XX.ravel(), YY.ravel()])[:, 1].reshape(XX.shape)
+    ax[1].contourf(XX, YY, P, levels=20, cmap="RdBu_r", alpha=0.75)
+    ax[1].contour(XX, YY, P, levels=[0.5], colors="k", linewidths=1.6)
+    ax[1].scatter(x0[:, 0], x0[:, 1], s=9, color="#08519c", edgecolor="w", lw=0.2,
+                  label="class 0")
+    ax[1].scatter(x1[:, 0], x1[:, 1], s=9, color="#a63603", edgecolor="w", lw=0.2,
+                  label="class 1")
     ax[1].set_xlabel("feature 1"); ax[1].set_ylabel("feature 2")
+    ax[1].set_title(f"Data view: real trained ReLU branch boundary "
+                    f"(train accuracy {acc:.2f})")
     ax[1].legend(loc="upper right", fontsize=7)
     fig.tight_layout(); fig.savefig(os.path.join(OUT, "branch_mlp.png")); plt.close(fig)
 

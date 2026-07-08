@@ -512,6 +512,11 @@ lower panel is the data view of the logistic map.}
 \label{fig:branchlr}
 \end{figure}
 
+In architecture terms Branch A has no hidden layer, no dropout, and no
+recurrence. It is a single feedforward linear layer followed by a logistic, so
+the meta layer receives a clean linear baseline that the deeper branches then
+improve on.
+
 The first branch is a logistic model, and it is the cleanest place to derive
 the gradient that reappears in every later layer. The model passes a linear
 score through the logistic function, which maps the real line to a probability,
@@ -591,6 +596,11 @@ Gaussian class densities produce a logistic posterior with a linear log odds.}
 \label{fig:branchnb}
 \end{figure}
 
+In architecture terms Branch B has no hidden layer and no dropout. It is a
+whitening step followed by a single feedforward linear layer and a logistic, with
+the class mean and the log variance learned by gradient descent, and it has no
+recurrence.
+
 The second branch assumes each feature is Gaussian within a class and that the
 features are conditionally independent, which is why it is called naive. This
 section shows why that assumption produces a linear score, which is the form the
@@ -647,6 +657,13 @@ shows the nonlinear boundary the rectified layers can represent.}
 \label{fig:branchmlp}
 \end{figure}
 
+In architecture terms Branch C is the deep branch. It stacks the hidden
+rectified layers set by the configuration, applies dropout to each of them, and
+is feedforward with no recurrence, which is where the nonlinear capacity of the
+model lives. The boundary in Figure \ref{fig:branchmlp} is produced by this same
+architecture trained on two interleaving classes, and it separates them at ninety
+six percent.
+
 The third branch is a fully connected network with rectified linear activations,
 and it supplies the nonlinear capacity the linear branches lack. Each layer
 applies an affine map and then a rectifier, which zeroes the negative part,
@@ -682,8 +699,10 @@ replayed in the backward pass so the gradient matches the forward computation.
 \section{Branch D: Sentiment}
 
 The fourth branch reads a news sentiment score and maps it to a probability with
-a small logistic unit, so the meta layer can lean on news tone when it helps. The
-branch is deliberately simple because the sentiment signal is sparse in the
+a small logistic unit, so the meta layer can lean on news tone when it helps. In
+architecture terms it has no hidden layer, no dropout, and no recurrence, being a
+single feedforward linear layer on the score. The branch is deliberately simple
+because the sentiment signal is sparse in the
 historical record, where many days carry no scored headline and the score sits
 near zero. Writing the compound score as $s$ the branch output is
 \[
@@ -714,6 +733,11 @@ backpropagated through time. The data view runs one cell on a bursty input and
 shows the cell state carrying the burst forward as memory.}
 \label{fig:branchlstm}
 \end{figure}
+
+In architecture terms Branch E is the only recurrent branch. Its hidden and cell
+states feed back at every time step, it carries no dropout inside the cell, and
+it is trained by backpropagation through time rather than by a single feedforward
+pass.
 
 The recurrent branch reads a lookback window of feature vectors and summarizes
 it into one embedding, and it is the workhorse of the multi scale model. The
