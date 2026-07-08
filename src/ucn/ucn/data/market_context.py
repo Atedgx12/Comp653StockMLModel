@@ -207,3 +207,110 @@ def load_or_build_sector_map(
         pass
 
     return sector_map
+
+
+def build_correlation_clusters(
+    close: pd.DataFrame,
+    n_clusters: Optional[int] = None,
+    insample_end: Optional[str] = None,
+    k_range: tuple = (4, 16),
+    min_obs: int = 250,
+) -> Dict[str, str]:
+    """
+    Group tickers into data driven sectors by clustering return co movement.
+
+    Rather than trust an external sector label, I let the data decide which
+    names belong together.  Two stocks belong in the same group when their
+    returns move together, which is the statistical meaning of a sector.  I
+    build the pairwise correlation of daily returns, turn it into a distance
+    where highly correlated names sit close together, and cluster that distance.
+
+    To avoid letting future co movement leak into the features, correlations
+    are estimated only from data up to insample_end.  The resulting cluster
+    labels are then held fixed and applied to the whole sample.
+
+    When n_clusters is not given, the number of groups is chosen by sweeping a
+    range of candidate counts and keeping the one with the best silhouette
+    score, so the data decides how many sectors exist.
+
+    Returns a map from ticker to a cluster label such as CL03, in the same form
+    the rest of the pipeline expects from a sector map.  Tickers with too little
+    history to cluster fall into a MARKET catch all group.
+    """
+    sub = close.loc[:insample_end] if insample_end is not None else close
+    returns = np.log(sub / sub.shift(1))
+
+    valid = [c for c in returns.columns if returns[c].notna().sum() >= min_obs]
+    dropped = [c for c in close.columns if c not in valid]
+    if len(valid) < k_range[0] + 1:
+        return {t: "MARKET" for t in close.columns}
+
+    corr = returns[valid].corr().fillna(0.0)
+    # Distance in zero to two: identical movers sit at zero, opposite movers at two.
+    dist = (1.0 - corr).clip(lower=0.0).values
+
+    labels = _cluster_distance_matrix(dist, n_clusters, k_range)
+
+    cluster_map = {t: f"CL{int(lab):02d}" for t, lab in zip(valid, labels)}
+    for t in dropped:
+        cluster_map[t] = "MARKET"
+
+    n_found = len(set(labels))
+    print(f"  Learned clusters: {n_found} groups from return co movement "
+          f"({len(valid)} tickers clustered, {len(dropped)} in MARKET)",
+          flush=True)
+    return cluster_map
+
+
+def _cluster_distance_matrix(dist, n_clusters, k_range):
+    """
+    Cluster a precomputed distance matrix, selecting k by silhouette when
+    n_clusters is not supplied.  Uses scikit learn when available and falls
+    back to a compact numpy KMeans on the distance rows otherwise.
+    """
+    try:
+        from sklearn.cluster import AgglomerativeClustering
+        from sklearn.metrics import silhouette_score
+
+        if n_clusters is not None:
+            model = AgglomerativeClustering(
+                n_clusters=n_clusters, metric="precomputed", linkage="average")
+            return model.fit_predict(dist)
+
+        best_k, best_score, best_labels = k_range[0], -1.0, None
+        upper = min(k_range[1], dist.shape[0] - 1)
+        for k in range(k_range[0], upper + 1):
+            model = AgglomerativeClustering(
+                n_clusters=k, metric="precomputed", linkage="average")
+            labels = model.fit_predict(dist)
+            if len(set(labels)) < 2:
+                continue
+            score = silhouette_score(dist, labels, metric="precomputed")
+            if score > best_score:
+                best_k, best_score, best_labels = k, score, labels
+        print(f"  Silhouette selected k={best_k} (score={best_score:.4f})",
+              flush=True)
+        return best_labels
+
+    except Exception:
+        k = n_clusters or (k_range[0] + k_range[1]) // 2
+        return _numpy_kmeans(dist, k)
+
+
+def _numpy_kmeans(X, k, iters=50, seed=0):
+    """A compact KMeans used only when scikit learn is unavailable."""
+    rng = np.random.default_rng(seed)
+    idx = rng.choice(X.shape[0], size=k, replace=False)
+    centers = X[idx].copy()
+    labels = np.zeros(X.shape[0], dtype=int)
+    for _ in range(iters):
+        d = ((X[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
+        new_labels = d.argmin(axis=1)
+        if np.array_equal(new_labels, labels):
+            break
+        labels = new_labels
+        for j in range(k):
+            members = X[labels == j]
+            if len(members):
+                centers[j] = members.mean(axis=0)
+    return labels

@@ -34,6 +34,16 @@ def _load_sector_map(tickers):
     except Exception:
         return None
 
+
+def _learn_cluster_map(close, insample_end, n_clusters):
+    """Learn data driven sector groups by clustering return co movement."""
+    try:
+        from ucn.data.market_context import build_correlation_clusters
+        return build_correlation_clusters(
+            close, n_clusters=n_clusters, insample_end=insample_end)
+    except Exception:
+        return None
+
 try:
     import lightgbm as lgb
     HAS_LGB = True
@@ -94,6 +104,12 @@ def parse_args():
                    help="Add hierarchical market context: stock vs sector vs "
                         "broad market relative strength plus macro regime "
                         "descriptors (broad market trend and volatility).")
+    p.add_argument("--cluster-hierarchy", action="store_true",
+                   help="Learn the sector groups from return co movement by "
+                        "clustering, instead of using yfinance GICS labels.")
+    p.add_argument("--n-clusters", type=int, default=None,
+                   help="Fixed number of learned clusters. Omit to let the "
+                        "silhouette score choose the count automatically.")
     return p.parse_args()
 
 
@@ -208,15 +224,26 @@ def main():
         store.summary()
         store.close()
     else:
+        # Choose the sector grouping source for the hierarchical context.
+        # Learned clusters are estimated only from the in sample window so
+        # future co movement never leaks into the features.
+        sector_map = None
+        if args.use_hierarchy:
+            if args.cluster_hierarchy:
+                insample_end = str(pd.Timestamp(
+                    close.index[len(close.index) // 2]).date())
+                sector_map = _learn_cluster_map(
+                    close, insample_end, args.n_clusters)
+            else:
+                sector_map = _load_sector_map(close.columns.tolist())
+
         X_df, y_df, feat_names, has_sent = make_features(
             close, sent_df, vol_df,
             horizon=args.horizon,
             stride=args.stride,
             use_nomadic=args.use_nomadic,
             use_hierarchy=args.use_hierarchy,
-            sector_map=(
-                _load_sector_map(close.columns.tolist())
-                if args.use_hierarchy else None))
+            sector_map=sector_map)
         dates = X_df.index.values
         # Extract ticker column for LSTM (not a training feature)
         ticker_ids = X_df.pop("_ticker").values if "_ticker" in X_df.columns else None
