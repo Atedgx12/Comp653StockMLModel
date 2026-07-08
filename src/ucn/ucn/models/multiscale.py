@@ -239,24 +239,34 @@ class MultiScaleTermStructureNet:
         best = 1e18; best_p = None; bad = 0
         for epoch in range(self.epochs):
             self._idx_rng.shuffle(idx)
+            ep_bce = 0.0; n_b = 0
             for s in range(0, len(idx), self.batch_size):
                 b = to_device(idx[s:s + self.batch_size])
                 sl = [seq_list[k][tr][b] for k in range(self.B)]
                 c = self._forward(sl, training=True)
                 g = self._backward(c, Y[tr][b])
                 self._update(g, self.lr)
+                Pb = c["P"]; eps = 1e-12
+                ep_bce += float(to_cpu(-(Y[tr][b]*np.log(Pb+eps)
+                                         + (1-Y[tr][b])*np.log(1-Pb+eps)).mean()))
+                n_b += 1
             cval = self._forward([seq_list[k][va] for k in range(self.B)],
                                  training=False)
             P = cval["P"]; eps = 1e-12
             bce = float(to_cpu(-(Y[va]*np.log(P+eps)
                                  + (1-Y[va])*np.log(1-P+eps)).mean()))
+            # Mean accuracy across the horizon heads on the validation split.
+            val_acc = float(to_cpu(((P >= 0.5) == (Y[va] >= 0.5)).mean()))
+            tr_bce = ep_bce / max(n_b, 1)
             if bce < best - 1e-6:
                 best = bce; best_p = {k: v.copy() for k, v in self.params.items()}; bad = 0
             else:
                 bad += 1
             if self.verbose and (epoch + 1) % self.verbose == 0:
-                print(f"  Epoch {epoch+1:4d}/{self.epochs}  val_BCE={bce:.5f}",
-                      flush=True)
+                marker = " *" if bad == 0 else ""
+                print(f"  Epoch {epoch+1:4d}/{self.epochs}  "
+                      f"train_BCE={tr_bce:.5f}  val_BCE={bce:.5f}  "
+                      f"val_acc={val_acc:.4f}{marker}", flush=True)
             if self.patience and bad >= self.patience:
                 if self.verbose:
                     print(f"  Early stop epoch {epoch+1}", flush=True)

@@ -47,11 +47,14 @@ def daily_seq_features(close, vol):
             continue
         r1 = np.log(c / c.shift(1))
         df = pd.DataFrame({
-            "r1":   r1,
-            "absr": r1.abs(),
-            "rvol": r1.rolling(5).std(),
-            "dvol": (np.log(vol[t].reindex(c.index) + 1.0).diff()
-                     if t in vol.columns else 0.0 * r1),
+            "r1":     r1,
+            "absr":   r1.abs(),
+            "rvol5":  r1.rolling(5).std(),
+            "rvol10": r1.rolling(10).std(),
+            "rvol20": r1.rolling(20).std(),
+            "mom10":  (c / c.shift(10) - 1.0),
+            "dvol":   (np.log(vol[t].reindex(c.index) + 1.0).diff()
+                       if t in vol.columns else 0.0 * r1),
         }).fillna(0.0)
         feats[t] = df
     return feats
@@ -72,7 +75,7 @@ def sample_window(arr, w, t_max):
 def build_multiscale_sequences(close, vol, index, ticker_col, windows):
     """Return a list of B sequence tensors aligned to the feature rows."""
     daily = daily_seq_features(close, vol)
-    d = 4
+    d = next(iter(daily.values())).shape[1] if daily else 4
     steps = [min(w, T_MAX) for w in windows]
     B = len(windows)
     N = len(index)
