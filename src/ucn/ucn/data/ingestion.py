@@ -121,10 +121,6 @@ def _tickers_from_csv() -> Optional[List[str]]:
         return None
 
 
-def download_prices(
-    tickers: List[str],
-    start: str = "2015-01-01",
-    end: Optional[str] = None,
 def _yf_download_field(tickers: List[str], field: str,
                        start: str, end: str,
                        batch_size: int = 50) -> Optional[pd.DataFrame]:
