@@ -73,6 +73,18 @@ class UCNConfig:
     # descriptors let the model notice when the test period sits in a
     # different regime than the training period, the core long horizon problem.
 
+    use_hierarchy_gate: bool = False
+    # Add a learnable scalar gate per hierarchy layer, trained by backprop.
+    # Each price feature is scaled by its layer's gate before the branches,
+    # so the model learns how much to lean on each layer and the gate values
+    # are a readable result.
+
+    feature_groups: Tuple[int, ...] = ()
+    # Group index per price feature column, used only by the hierarchy gate.
+
+    n_hierarchy_groups: int = 0
+    # Number of distinct hierarchy layers the gate spans.
+
     # ── Sample weighting ─────────────────────────────────────────────────
     recent_weight_decay: float = 0.0
     # Exponential time-weighting to counter regime shift.

@@ -47,6 +47,7 @@ class UnifiedCourseNetwork:
         # A CPU generator used only to shuffle the batch index order, because
         # the CuPy generator does not implement permutation.
         self._idx_rng = _np.random.default_rng(self.cfg.seed)
+        self._groups = None   # hierarchy gate column-to-layer map, set on init
 
     # ── Branch freeze / unfreeze ─────────────────────────────────────────
 
@@ -109,6 +110,12 @@ class UnifiedCourseNetwork:
         self.params['W_meta'] = rng.standard_normal((meta_in, K)) * math.sqrt(2.0/meta_in)
         self.params['b_meta'] = np.zeros(K)
 
+        # Learnable hierarchy gate: one scalar per layer, initialized to zero so
+        # 2*sigmoid(0)=1 leaves every feature unscaled at the start of training.
+        if cfg.use_hierarchy_gate and cfg.n_hierarchy_groups > 0:
+            self.params['w_group'] = np.zeros(cfg.n_hierarchy_groups)
+            self._groups = np.asarray(cfg.feature_groups)
+
         for key in self.params:
             self.m[key] = np.zeros_like(self.params[key])
             self.v[key] = np.zeros_like(self.params[key])
@@ -125,6 +132,18 @@ class UnifiedCourseNetwork:
             X_price = X
 
         c = {'X': X_price}
+
+        # Learnable hierarchy gate: scale each price feature by its layer gate
+        # (2*sigmoid keeps the scale in (0, 2), init 1). The gate weights train
+        # by backprop so the model learns how much each layer matters.
+        if 'w_group' in self.params:
+            scale_g    = 2.0 * sigmoid(self.params['w_group'])
+            scale_cols = scale_g[self._groups]
+            c['X_raw']      = X_price
+            c['scale_cols'] = scale_cols
+            c['scale_g']    = scale_g
+            X_price = X_price * scale_cols
+            c['X'] = X_price
 
         # Branch A
         z_lr = X_price @ self.params['W_lr'] + self.params['b_lr']
@@ -305,6 +324,20 @@ class UnifiedCourseNetwork:
         dX = (dz_lr @ self.params['W_lr'].T
               + dX_n / c['sig']
               + dm @ self.params['Wm1'].T)
+
+        # Learnable hierarchy gate gradient. dX is the gradient with respect to
+        # the gated price features, so I chain it back through the per column
+        # scale and sum into one gradient per hierarchy layer.
+        if 'w_group' in self.params:
+            d_scale_cols = (dX * c['X_raw']).sum(0)
+            scale_g = c['scale_g']
+            n_g = self.params['w_group'].shape[0]
+            d_scale_g = np.zeros(n_g)
+            for gi in range(n_g):
+                d_scale_g[gi] = d_scale_cols[self._groups == gi].sum()
+            # d(2*sigmoid(w))/dw = scale_g * (1 - scale_g/2)
+            g['w_group'] = d_scale_g * scale_g * (1.0 - scale_g / 2.0)
+
         return g, dX
 
     # ── Adam update with per-branch LR and frozen param support ──────────
@@ -466,6 +499,26 @@ class UnifiedCourseNetwork:
                       flush=True)
         return self
 
+    def hierarchy_gate_report(self, group_names) -> None:
+        """Print the learned per-layer hierarchy gate values.
+
+        The gate scale is 2*sigmoid(w), so 1.0 means the layer is left as is,
+        above 1.0 means the model amplified that layer, and below 1.0 means it
+        attenuated it.  These are trained by backprop, so they read out how much
+        the model chose to rely on each hierarchy layer.
+        """
+        if 'w_group' not in self.params:
+            return
+        w = to_cpu(self.params['w_group'])
+        scale = 2.0 / (1.0 + _np.exp(-w))
+        print("\n=== Learned hierarchy gate (2*sigmoid(w), 1.0 = neutral) ===")
+        print(f"{'Layer':<20} {'Gate':>8}")
+        print("-" * 30)
+        order = _np.argsort(-scale)
+        for i in order:
+            name = group_names[i] if i < len(group_names) else f"group{i}"
+            print(f"{name:<20} {float(scale[i]):>8.3f}")
+
     def predict_proba(self, X: np.ndarray,
                       seqs: np.ndarray = None) -> np.ndarray:
         out = self._forward(to_device(X), training=False,
@@ -491,6 +544,9 @@ class UnifiedCourseNetwork:
         self.m = {k: np.zeros_like(v) for k, v in self.params.items()}
         self.v = {k: np.zeros_like(v) for k, v in self.params.items()}
         self.t = 0
+        # Restore the hierarchy gate column-to-layer map if the gate is present.
+        if 'w_group' in self.params and self.cfg.feature_groups:
+            self._groups = _np.asarray(self.cfg.feature_groups)
         # Infer n_classes from the meta-layer bias shape
         if 'b_meta' in self.params:
             self.n_classes = int(self.params['b_meta'].shape[0])

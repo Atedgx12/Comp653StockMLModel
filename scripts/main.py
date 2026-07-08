@@ -98,6 +98,10 @@ def parse_args():
                    help="Prediction target. 'return' classifies forward return "
                         "direction. 'vol' classifies forward realized "
                         "volatility, which clusters and is far more predictable.")
+    p.add_argument("--hierarchy-gate", action="store_true", dest="hierarchy_gate",
+                   help="Add a learnable scalar gate per hierarchy layer, "
+                        "trained by backprop, so the model learns how much to "
+                        "weight each layer and the values are readable.")
     p.add_argument("--no-sent",     action="store_true")
     p.add_argument("--checkpoint",  default=None)
     p.add_argument("--cv-only",     action="store_true")
@@ -330,6 +334,21 @@ def lgbm_baseline(X: np.ndarray, y: np.ndarray,
     return acc, auc
 
 
+def _hierarchy_group(col: str) -> str:
+    """Map a feature column name to its hierarchy layer for weight reporting."""
+    if col.startswith("macro_"):
+        return "macro regime"
+    if col.startswith("sector_vs_market"):
+        return "sector vs market"
+    if col.startswith("rs_sector"):
+        return "stock vs sector"
+    if col.startswith("rs_market"):
+        return "stock vs market"
+    if col == "sent_rank":
+        return "sentiment"
+    return "stock own"
+
+
 def naive_persistence_baseline(X: np.ndarray, y: np.ndarray, dates: np.ndarray,
                                sel_cols: list, purge: int = 1,
                                ref: str = "vol252") -> tuple:
@@ -476,6 +495,20 @@ def main():
     # Column names in X_sel order, used later for the naive persistence baseline.
     sel_cols = list(selected) + (["sent_rank"] if has_sent else [])
 
+    # Build the hierarchy-gate group map over the price features (X_sel order,
+    # excluding the trailing sentiment column). Each price feature is assigned
+    # an integer layer index; group_names gives the readable label per index.
+    gate_price_cols = list(selected)
+    _seen = {}
+    gate_group_ids = []
+    group_names = []
+    for c in gate_price_cols:
+        g = _hierarchy_group(c)
+        if g not in _seen:
+            _seen[g] = len(group_names)
+            group_names.append(g)
+        gate_group_ids.append(_seen[g])
+
     print(f"  Using {len(selected)} features"
           + (" + VADER sentiment" if has_sent else ""), flush=True)
 
@@ -497,6 +530,9 @@ def main():
         lstm_lookback=args.lstm_lookback,
         lstm_hidden=args.lstm_hidden,
         horizon=args.horizon,
+        use_hierarchy_gate=args.hierarchy_gate,
+        feature_groups=tuple(gate_group_ids),
+        n_hierarchy_groups=len(group_names),
     )
     cfg_full = UCNConfig(
         hidden_sizes=(256, 128, 64),
@@ -515,6 +551,9 @@ def main():
         lstm_lookback=args.lstm_lookback,
         lstm_hidden=args.lstm_hidden,
         horizon=args.horizon,
+        use_hierarchy_gate=args.hierarchy_gate,
+        feature_groups=tuple(gate_group_ids),
+        n_hierarchy_groups=len(group_names),
     )
 
     # 5a. Compute sample weights early — needed by LSTM alignment and CV
@@ -637,6 +676,10 @@ def main():
     # Save checkpoint for fine-tuning
     ucn.save_checkpoint(os.path.join(OUT_DIR, "ucn_weights.npz"))
     ucn.branch_summary()
+
+    # Report the learned per-layer hierarchy gate values (trained by backprop).
+    if args.use_hierarchy and getattr(args, "hierarchy_gate", False):
+        ucn.hierarchy_gate_report(group_names)
 
     # 7. LightGBM baseline
     print("\n[Baseline] LightGBM-GPU ...", flush=True)
