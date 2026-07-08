@@ -13,6 +13,7 @@ Usage:
 import os, sys, time, argparse
 import numpy as np
 import pandas as pd
+from itertools import combinations
 
 # ── Package root on sys.path ──────────────────────────────────────────────
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -110,6 +111,17 @@ def parse_args():
     p.add_argument("--n-clusters", type=int, default=None,
                    help="Fixed number of learned clusters. Omit to let the "
                         "silhouette score choose the count automatically.")
+    p.add_argument("--use-cpcv", action="store_true",
+                   help="Use combinatorial purged cross validation instead of "
+                        "a single expanding walk forward, giving many out of "
+                        "sample paths with purge and embargo against leakage.")
+    p.add_argument("--cpcv-groups", type=int, default=6,
+                   help="Number of contiguous time blocks for CPCV.")
+    p.add_argument("--cpcv-test-groups", type=int, default=2,
+                   help="Number of blocks held out as test in each CPCV path.")
+    p.add_argument("--embargo-frac", type=float, default=0.01,
+                   help="Embargo band after each test block, as a fraction of "
+                        "the number of unique dates.")
     return p.parse_args()
 
 
@@ -158,6 +170,98 @@ def walk_forward_cv(X: np.ndarray, y: np.ndarray, dates: np.ndarray,
     m_acc = float(np.mean(accs)) if accs else 0.0
     m_auc = float(np.mean(aucs)) if aucs else 0.0
     print(f"  CV mean  acc={m_acc:.4f}  auc={m_auc:.4f}")
+    return m_acc, m_auc
+
+
+# ── Combinatorial Purged Cross-Validation ─────────────────────────────────
+
+def purged_cpcv(X: np.ndarray, y: np.ndarray, dates: np.ndarray,
+                cfg: UCNConfig, n_groups: int = 6, n_test_groups: int = 2,
+                embargo_frac: float = 0.01,
+                sample_weights: np.ndarray = None,
+                seqs: np.ndarray = None) -> tuple:
+    """
+    Combinatorial purged cross validation in the style of Lopez de Prado.
+
+    The timeline is cut into n_groups contiguous blocks.  Every combination of
+    n_test_groups blocks becomes a test set and the remaining blocks form the
+    training set, which gives many out of sample paths instead of the single
+    held out tail that a plain walk forward provides.  This measures how the
+    model behaves across several distinct market periods rather than one.
+
+    Two safeguards stop the future from leaking into the past.  Purging drops
+    any training row whose forward return label window overlaps a test block,
+    which matters here because the label looks horizon days ahead and would
+    otherwise reach into a test period.  An embargo drops a short band of
+    training rows immediately after each test block so that serial correlation
+    right after the test window cannot leak backward into training.
+
+    The blocks stay contiguous in time and are never randomly shuffled, so the
+    temporal ordering that a 90 day forecast depends on is always respected.
+    """
+    unique_dates = np.sort(np.unique(dates))
+    n = len(unique_dates)
+    horizon = getattr(cfg, "horizon", 1)
+    embargo = int(np.ceil(embargo_frac * n))
+
+    bounds = np.linspace(0, n, n_groups + 1).astype(int)
+    groups = [unique_dates[bounds[g]:bounds[g + 1]] for g in range(n_groups)]
+
+    combos = list(combinations(range(n_groups), n_test_groups))
+    accs, aucs = [], []
+
+    print(f"[CPCV] {n_groups} blocks, {n_test_groups} test per split, "
+          f"{len(combos)} paths, purge={horizon}d, embargo={embargo}d",
+          flush=True)
+
+    for ci, test_groups in enumerate(combos):
+        test_dates = np.concatenate([groups[g] for g in test_groups])
+        te_m = np.isin(dates, test_dates)
+
+        # Start from every row outside the test blocks, then purge and embargo.
+        tr_m = ~te_m
+        for g in test_groups:
+            g_start_i = np.searchsorted(unique_dates, groups[g][0])
+            g_end_i   = np.searchsorted(unique_dates, groups[g][-1])
+            # Purge training rows whose label window reaches into this block.
+            purge_lo = unique_dates[max(0, g_start_i - horizon)]
+            purge_hi = unique_dates[min(n - 1, g_end_i)]
+            # Embargo a short band immediately after the block.
+            emb_hi   = unique_dates[min(n - 1, g_end_i + embargo)]
+            drop = (dates >= purge_lo) & (dates <= emb_hi)
+            tr_m &= ~drop
+
+        X_tr, X_te = X[tr_m], X[te_m]
+        y_tr, y_te = y[tr_m], y[te_m]
+        w_tr = sample_weights[tr_m] if sample_weights is not None else None
+        s_tr = seqs[tr_m] if seqs is not None else None
+        s_te = seqs[te_m] if seqs is not None else None
+        if len(X_tr) < 500 or len(X_te) < 50:
+            continue
+
+        mu = X_tr.mean(0); sd = X_tr.std(0) + 1e-9
+        X_tr_s = (X_tr - mu) / sd; X_te_s = (X_te - mu) / sd
+
+        t0  = time.time()
+        ucn = UnifiedCourseNetwork(cfg)
+        ucn.fit(X_tr_s, y_tr, sample_weights=w_tr, seqs=s_tr)
+        elapsed = time.time() - t0
+
+        pred = ucn.predict(X_te_s, seqs=s_te)
+        prob = ucn.predict_proba(X_te_s, seqs=s_te)[:, 1]
+        acc  = accuracy(y_te, pred)
+        auc  = roc_auc(y_te, prob)
+        accs.append(acc); aucs.append(auc)
+        tg = "+".join(str(g) for g in test_groups)
+        print(f"  path {ci+1}/{len(combos)}  test-blocks={tg}  "
+              f"train={tr_m.sum():,}  test={te_m.sum():,}  "
+              f"acc={acc:.4f}  auc={auc:.4f}  time={elapsed:.1f}s", flush=True)
+
+    m_acc = float(np.mean(accs)) if accs else 0.0
+    m_auc = float(np.mean(aucs)) if aucs else 0.0
+    s_auc = float(np.std(aucs)) if aucs else 0.0
+    print(f"  CPCV mean  acc={m_acc:.4f}  auc={m_auc:.4f}  "
+          f"auc_std={s_auc:.4f}  ({len(aucs)} paths)")
     return m_acc, m_auc
 
 
@@ -366,14 +470,26 @@ def main():
     cut    = unique_dates[int(0.50 * len(unique_dates))]
     sub_m  = dates <= cut
     w_sub  = sample_weights[sub_m] if sample_weights is not None else None
-    print(f"\n[CV] Walk-forward on {sub_m.sum():,} rows (first 50% of dates) ...",
-          flush=True)
     seqs_sub = seqs_all[sub_m] if seqs_all is not None else None
-    cv_acc, cv_auc = walk_forward_cv(
-        X_sel[sub_m], y_all[sub_m], dates[sub_m],
-        cfg_cv, n_splits=args.n_cv_splits,
-        sample_weights=w_sub,
-        seqs=seqs_sub)
+
+    if args.use_cpcv:
+        print(f"\n[CV] Combinatorial purged CV on {sub_m.sum():,} rows "
+              f"(first 50% of dates) ...", flush=True)
+        cv_acc, cv_auc = purged_cpcv(
+            X_sel[sub_m], y_all[sub_m], dates[sub_m],
+            cfg_cv, n_groups=args.cpcv_groups,
+            n_test_groups=args.cpcv_test_groups,
+            embargo_frac=args.embargo_frac,
+            sample_weights=w_sub,
+            seqs=seqs_sub)
+    else:
+        print(f"\n[CV] Walk-forward on {sub_m.sum():,} rows "
+              f"(first 50% of dates) ...", flush=True)
+        cv_acc, cv_auc = walk_forward_cv(
+            X_sel[sub_m], y_all[sub_m], dates[sub_m],
+            cfg_cv, n_splits=args.n_cv_splits,
+            sample_weights=w_sub,
+            seqs=seqs_sub)
 
     pd.DataFrame([{"acc": cv_acc, "auc": cv_auc}],
                  index=["UCN"]).to_csv(

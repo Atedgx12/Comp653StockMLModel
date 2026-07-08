@@ -213,8 +213,9 @@ def build_correlation_clusters(
     close: pd.DataFrame,
     n_clusters: Optional[int] = None,
     insample_end: Optional[str] = None,
-    k_range: tuple = (4, 16),
+    k_range: tuple = (8, 20),
     min_obs: int = 250,
+    market_neutral: bool = True,
 ) -> Dict[str, str]:
     """
     Group tickers into data driven sectors by clustering return co movement.
@@ -224,6 +225,15 @@ def build_correlation_clusters(
     returns move together, which is the statistical meaning of a sector.  I
     build the pairwise correlation of daily returns, turn it into a distance
     where highly correlated names sit close together, and cluster that distance.
+
+    Raw return correlation is dominated by the broad market factor.  Almost
+    every stock correlates strongly with the market, so clustering raw returns
+    finds one giant blob and splits it into a few coarse pieces that are useless
+    for a sector relative feature.  When market_neutral is set I first remove
+    the common market factor by subtracting the cross sectional mean return on
+    each date, then cluster the residuals.  What remains after the whole market
+    tide is stripped out is the idiosyncratic co movement that actually defines
+    a peer group, so the clustering finds real sector structure.
 
     To avoid letting future co movement leak into the features, correlations
     are estimated only from data up to insample_end.  The resulting cluster
@@ -245,7 +255,15 @@ def build_correlation_clusters(
     if len(valid) < k_range[0] + 1:
         return {t: "MARKET" for t in close.columns}
 
-    corr = returns[valid].corr().fillna(0.0)
+    ret_valid = returns[valid]
+    if market_neutral:
+        # Subtract the equal weighted market return on each date so the shared
+        # market factor no longer dominates the correlations.  What is left is
+        # each stock's idiosyncratic move relative to the whole universe.
+        market_ret = ret_valid.mean(axis=1)
+        ret_valid = ret_valid.sub(market_ret, axis=0)
+
+    corr = ret_valid.corr().fillna(0.0)
     # Distance in zero to two: identical movers sit at zero, opposite movers at two.
     dist = (1.0 - corr).clip(lower=0.0).values
 
@@ -256,8 +274,9 @@ def build_correlation_clusters(
         cluster_map[t] = "MARKET"
 
     n_found = len(set(labels))
-    print(f"  Learned clusters: {n_found} groups from return co movement "
-          f"({len(valid)} tickers clustered, {len(dropped)} in MARKET)",
+    kind = "market neutral" if market_neutral else "raw"
+    print(f"  Learned clusters ({kind}): {n_found} groups from return co "
+          f"movement ({len(valid)} tickers clustered, {len(dropped)} in MARKET)",
           flush=True)
     return cluster_map
 
