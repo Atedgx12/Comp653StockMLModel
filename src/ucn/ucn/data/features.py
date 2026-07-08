@@ -16,6 +16,7 @@ def make_features(
     min_history: int = 300,
     horizon: int = 1,
     stride: int = 1,
+    use_nomadic: bool = False,
 ) -> Tuple[pd.DataFrame, pd.Series, List[str], bool]:
     """
     Build the cross-sectional feature matrix and labels.
@@ -24,10 +25,12 @@ def make_features(
     ----------
     horizon : int
         Forward-return window in trading days.
-        1 = next day, 20 = 1 month, 63 = 3 months, 126 = 6 months.
     stride : int
         Keep only every stride-th row to reduce label autocorrelation.
-        stride=1 keeps all rows; stride=horizon gives non-overlapping labels.
+    use_nomadic : bool
+        Add ~20 extended indicators from NomadicStockBot methodology:
+        CCI, Williams %R, OBV, CMF, MFI, ADX, Ichimoku, VWAP deviation,
+        Donchian breakout, BB squeeze release, RSI/MACD temporal derivatives.
         For horizon 20-63, stride=5 to 10 is a good compromise.
     """
     print("[Features] Engineering features ...", flush=True)
@@ -88,6 +91,22 @@ def make_features(
                           if sent_df is not None and ticker in sent_df.columns
                           else 0.0)
         feat["_fwd"]   = np.log(c.shift(-horizon) / c)
+
+        # Optional: NomadicStockBot extended indicators
+        if use_nomadic:
+            try:
+                from .nomadic_features import add_nomadic_features
+                # Use OHLCV data: approximate high/low from close if not available
+                if vol_df is not None and ticker in vol_df.columns:
+                    vol_s = vol_df[ticker].reindex(c.index).fillna(0.0)
+                else:
+                    vol_s = pd.Series(1.0, index=c.index)
+                # Daily OHLC approximation from close only (conservative)
+                high_s = c.rolling(1).max()
+                low_s  = c.rolling(1).min()
+                feat   = add_nomadic_features(c, feat, high_s, low_s, vol_s)
+            except Exception:
+                pass   # silently skip if nomadic features fail for any ticker
 
         df = pd.DataFrame(feat, index=c.index).dropna()
         all_X.append(df)

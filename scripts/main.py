@@ -70,6 +70,10 @@ def parse_args():
                         "recomputing them. Requires --store-path.")
     p.add_argument("--store-path",  default="D:/StockModel/features.duckdb",
                    help="Path to the DuckDB feature store.")
+    p.add_argument("--use-nomadic",  action="store_true",
+                   help="Add 20 extended indicators from NomadicStockBot: CCI, Williams R, "
+                        "OBV, CMF, MFI, ADX, Ichimoku, VWAP deviation, Donchian breakout, "
+                        "BB squeeze release, RSI/MACD temporal derivatives.")
     p.add_argument("--use-lstm",    action="store_true",
                    help="Add LSTM Branch E that processes a lookback window "
                         "of past feature vectors (professor's RNN equation).")
@@ -192,7 +196,8 @@ def main():
         X_df, y_df, feat_names, has_sent = make_features(
             close, sent_df, vol_df,
             horizon=args.horizon,
-            stride=args.stride)
+            stride=args.stride,
+            use_nomadic=args.use_nomadic)
         dates = X_df.index.values
         X_all = X_df.values.astype(np.float64)
         y_all = y_df.values.astype(int)
