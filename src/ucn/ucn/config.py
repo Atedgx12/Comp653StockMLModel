@@ -65,6 +65,14 @@ class UCNConfig:
     lstm_hidden: int = 32
     # Size of the LSTM hidden state and cell state.
 
+    # ── Hierarchical market context (Module 10) ──────────────────────────
+    use_hierarchy: bool = False
+    # Condition each stock on the layers above it in the market hierarchy:
+    # stock relative to sector, stock relative to broad market, and macro
+    # regime descriptors (broad market trend and volatility). The macro
+    # descriptors let the model notice when the test period sits in a
+    # different regime than the training period, the core long horizon problem.
+
     # ── Sample weighting ─────────────────────────────────────────────────
     recent_weight_decay: float = 0.0
     # Exponential time-weighting to counter regime shift.
@@ -83,7 +91,6 @@ class UCNConfig:
     # ── Misc ─────────────────────────────────────────────────────────────
     seed: int = 42
     verbose: int = 20          # print every N epochs (0 = silent)
-
     # ── Branch param key prefixes (used internally) ───────────────────────
     BRANCH_KEYS: Dict[str, Tuple[str, ...]] = field(default_factory=lambda: {
         'lr':   ('W_lr', 'b_lr'),

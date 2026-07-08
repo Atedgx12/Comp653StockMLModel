@@ -25,6 +25,15 @@ from ucn.training.weights import exponential_time_weights
 from ucn.data.ingestion import get_tickers, download_prices, download_volume, fetch_sentiment
 from ucn.data.features import make_features
 
+
+def _load_sector_map(tickers):
+    """Load or build the ticker to sector map for hierarchical context."""
+    try:
+        from ucn.data.market_context import load_or_build_sector_map
+        return load_or_build_sector_map(tickers)
+    except Exception:
+        return None
+
 try:
     import lightgbm as lgb
     HAS_LGB = True
@@ -81,6 +90,10 @@ def parse_args():
                    help="Number of past trading days fed into the LSTM.")
     p.add_argument("--lstm-hidden",   type=int, default=32,
                    help="LSTM hidden state size.")
+    p.add_argument("--use-hierarchy", action="store_true",
+                   help="Add hierarchical market context: stock vs sector vs "
+                        "broad market relative strength plus macro regime "
+                        "descriptors (broad market trend and volatility).")
     return p.parse_args()
 
 
@@ -199,7 +212,11 @@ def main():
             close, sent_df, vol_df,
             horizon=args.horizon,
             stride=args.stride,
-            use_nomadic=args.use_nomadic)
+            use_nomadic=args.use_nomadic,
+            use_hierarchy=args.use_hierarchy,
+            sector_map=(
+                _load_sector_map(close.columns.tolist())
+                if args.use_hierarchy else None))
         dates = X_df.index.values
         # Extract ticker column for LSTM (not a training feature)
         ticker_ids = X_df.pop("_ticker").values if "_ticker" in X_df.columns else None

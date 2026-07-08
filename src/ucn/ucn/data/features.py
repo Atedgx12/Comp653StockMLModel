@@ -17,6 +17,8 @@ def make_features(
     horizon: int = 1,
     stride: int = 1,
     use_nomadic: bool = False,
+    use_hierarchy: bool = False,
+    sector_map: Optional[dict] = None,
 ) -> Tuple[pd.DataFrame, pd.Series, List[str], bool]:
     """
     Build the cross-sectional feature matrix and labels.
@@ -36,6 +38,19 @@ def make_features(
     print("[Features] Engineering features ...", flush=True)
     all_X  = []
     tickers = close.columns.tolist()
+
+    # Hierarchical market context: build the broad market index and one index
+    # per sector once, before the ticker loop, so every ticker is conditioned
+    # on the same market and sector levels.
+    market_index = None
+    sector_indices = None
+    if use_hierarchy:
+        from .market_context import build_equal_weight_index, build_sector_indices
+        market_index = build_equal_weight_index(close)
+        sector_indices = build_sector_indices(close, sector_map)
+        n_sectors = len(sector_indices)
+        print(f"  Hierarchical context: 1 market index + {n_sectors} "
+              f"sector index(es)", flush=True)
 
     for i, ticker in enumerate(tickers):
         c = close[ticker].dropna()
@@ -109,6 +124,17 @@ def make_features(
             except Exception:
                 pass   # silently skip if nomadic features fail for any ticker
 
+        # Optional: hierarchical market context (stock vs sector vs market
+        # relative strength plus macro regime descriptors).
+        if use_hierarchy and market_index is not None:
+            from .market_context import add_hierarchical_context
+            sector_label = (sector_map.get(ticker, "MARKET")
+                            if sector_map else "MARKET")
+            sector_idx = sector_indices.get(sector_label,
+                                            sector_indices.get("MARKET"))
+            feat = add_hierarchical_context(ticker, c, feat,
+                                            market_index, sector_idx)
+
         df = pd.DataFrame(feat, index=c.index).dropna()
         all_X.append(df)
         if (i + 1) % 50 == 0:
@@ -118,10 +144,31 @@ def make_features(
     fwd_raw   = X_full.pop("_fwd")
     sent_raw  = X_full.pop("_sent")
     ticker_col = X_full.pop("_ticker")   # preserve for LSTM — not a feature
-    feat_names = X_full.columns.tolist()
 
     print("  Computing cross-sectional ranks ...", flush=True)
-    X_ranked = X_full.groupby(X_full.index).rank(pct=True)
+    # Macro regime columns are identical across the cross section on any date,
+    # so cross sectional percentile ranking would collapse them to a constant.
+    # I separate them out, z score them across time to expose regime shifts,
+    # and rank only the columns that actually vary across the cross section.
+    macro_cols = [c for c in X_full.columns if c.startswith("macro_")]
+    rank_cols  = [c for c in X_full.columns if not c.startswith("macro_")]
+
+    X_ranked = X_full[rank_cols].groupby(X_full.index).rank(pct=True)
+
+    if macro_cols:
+        macro_raw = X_full[macro_cols]
+        macro_z = (macro_raw - macro_raw.mean()) / (macro_raw.std() + 1e-9)
+        # Map z scores into the same zero to one band as the ranked features
+        # so every input to the network shares a comparable scale.
+        macro_scaled = 0.5 + 0.15 * macro_z.clip(-3, 3)
+        for col in macro_cols:
+            X_ranked[col] = macro_scaled[col]
+        print(f"  Macro regime features (time z scored): {len(macro_cols)}",
+              flush=True)
+
+    # Feature name order must match the column order of X_ranked, which places
+    # the ranked columns first and the macro columns after them.
+    feat_names = rank_cols + macro_cols
 
     has_sent = sent_df is not None
     if has_sent:
