@@ -81,6 +81,11 @@ def parse_args():
     p.add_argument("--shap-select", action="store_true", dest="shap_select",
                    help="Use LightGBM gain-based importance on recent data for feature "
                         "selection instead of all-data MI. Targets current-regime features.")
+    p.add_argument("--mi-top-k", type=int, default=None,
+                   help="Keep only the top-k features by mutual information and "
+                        "discard the rest as noise. Omit to keep all features. "
+                        "For a near-efficient signal a small k (15-20) reduces "
+                        "overfitting by shrinking the input dimension.")
     p.add_argument("--no-sent",     action="store_true")
     p.add_argument("--checkpoint",  default=None)
     p.add_argument("--cv-only",     action="store_true")
@@ -367,6 +372,12 @@ def main():
     price_names = [f for f in feat_names if f != "sent_rank"]
     price_idx   = [feat_names.index(f) for f in price_names]
 
+    # How many price features to keep. A cap discards the low-MI noise columns
+    # and shrinks the input dimension, which is the cheapest overfitting fix
+    # when the signal is close to efficient.
+    mi_k = (min(args.mi_top_k, len(price_names))
+            if args.mi_top_k else len(price_names))
+
     if args.shap_select and HAS_LGB:
         # Use LightGBM gain-based importance on the most recent 30% of data
         # to identify features predictive in the CURRENT regime.
@@ -383,16 +394,16 @@ def main():
                      verbosity=-1, seed=42),
                 dtmp, num_boost_round=100)
             imp    = dict(zip(price_names, bst.feature_importance("gain")))
-            selected = sorted(imp, key=imp.get, reverse=True)
+            selected = sorted(imp, key=imp.get, reverse=True)[:mi_k]
             print(f"  Top 10 by recent-regime LightGBM gain:")
             for f in selected[:10]:
                 print(f"    {f:30s}  gain={imp[f]:.1f}")
         else:
             selected, _ = select_features_by_mi(
-                X_all[:, price_idx], y_all, price_names, k=len(price_names))
+                X_all[:, price_idx], y_all, price_names, k=mi_k)
     else:
         selected, mi_scores = select_features_by_mi(
-            X_all[:, price_idx], y_all, price_names, k=len(price_names))
+            X_all[:, price_idx], y_all, price_names, k=mi_k)
 
     sel_idx     = [price_names.index(f) for f in selected]
     X_sel_price = X_all[:, sel_idx]
