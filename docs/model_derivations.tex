@@ -42,7 +42,7 @@ with quantile heads that produce conformally calibrated price bands, and it is
 combined with a cross sectional network of complementary branches under a softmax
 meta layer. On out of sample data the direction target sits near an area under
 the curve of one half, while the volatility term structure rises with the horizon
-and reaches about $0.92$ intraday and $0.88$ daily, and the price bands cover
+and reaches about $0.92$ intraday and $0.92$ daily, and the price bands cover
 their nominal ninety percent rate. We give the full derivation of every function
 the model uses, from the branch gradients and backpropagation through time to the
 pinball loss, the conformal coverage bound, and the ensemble, and we illustrate
@@ -1033,7 +1033,8 @@ heads.
 \caption{The multi scale fusion graph. Each branch produces an embedding, the
 drift between adjacent branches is formed explicitly, and the embeddings and
 drifts are concatenated into the trunk that feeds the volatility heads and the
-quantile band heads.}
+quantile band heads. The gated static context vector is fused alongside them so
+the cross sectional hierarchy signal reaches every horizon.}
 \label{fig:fusion}
 \end{figure}
 
@@ -1067,6 +1068,39 @@ and the drift magnitude on the right rises from the one to five day step up to
 the ninety to one hundred eighty day step.}
 \label{fig:drift}
 \end{figure}
+
+\subsection{The Static Context and the Hierarchy Gate}
+
+The window branches see only the recent price and volume path, which is a thin
+signal, so we also fuse a static cross sectional context vector into the trunk.
+This vector holds the features a strong cross sectional model relied on, multi
+window realized volatility, momentum, and market relative strength, each ranked
+across names on the same date so it is market neutral. The market relative
+columns carry the hierarchy signal, the position of a stock against the broad
+market. Writing the context as $c$ the model scales it by a learned hierarchy
+gate before fusing it,
+\[
+\tilde c = g \odot c, \qquad g = 2\,\sigma(w),
+\]
+so each feature scale sits in $(0, 2)$ and starts at one, which is neutral. The
+gated context is concatenated with the embeddings and the drift, so the fused
+vector becomes
+\[
+\text{fuse} = \bigl[\,e_1,\dots,e_B,\ \Delta_1,\dots,\Delta_{B-1},\ \tilde c\,\bigr].
+\]
+
+The gate learns which feature groups matter, which is the same mechanism the
+cross sectional network uses, and its gradient is the context error scaled by the
+derivative of the gate,
+\[
+\boxed{\,\frac{\partial \mathcal{L}}{\partial w}
+= \sum_n \left(\frac{\partial \mathcal{L}}{\partial \tilde c_n} \odot c_n\right)
+  \, g\,\bigl(1 - \tfrac{g}{2}\bigr).}
+\]
+
+This is how we turn the hierarchy weighting back on for the term structure model,
+so the long horizons can reach the predictability that the cross sectional
+features carry rather than the ceiling the price path alone allows.
 
 \subsection{The Curvature Coupling Penalty}
 
@@ -1104,10 +1138,10 @@ horizons. Working the second difference through the measured daily term
 structure the interior bends are small, which confirms the curve is already
 nearly smooth,
 \begin{align*}
-\text{at } 5\text{d}:\ -0.0725, \quad
-\text{at } 10\text{d}:\ +0.0074, \quad
-\text{at } 30\text{d}:\ -0.0201, \quad
-\text{at } 90\text{d}:\ -0.0246.
+\text{at } 5\text{d}:\ -0.0831, \quad
+\text{at } 10\text{d}:\ +0.0099, \quad
+\text{at } 30\text{d}:\ -0.0264, \quad
+\text{at } 90\text{d}:\ -0.0226.
 \end{align*}
 
 Figure \ref{fig:auc} shows the area under the curve at every horizon for both the
@@ -1118,7 +1152,7 @@ volatility clustering argument predicts.
 \centering
 \includegraphics[width=0.92\textwidth]{figures/derivations/auc_horizon.png}
 \caption{Test area under the curve by horizon. The daily scale climbs from about
-$0.62$ at one day to about $0.88$ at the long horizons, and the intraday scale
+$0.64$ at one day to about $0.92$ at the long horizons, and the intraday scale
 climbs from about $0.67$ at five minutes to about $0.92$ at four hours.}
 \label{fig:auc}
 \end{figure}

@@ -19,9 +19,9 @@ plt.rcParams.update({"figure.dpi": 150, "font.size": 11,
 # Measured results carried in from the training runs -----------------------
 HZ_D = np.array([1, 5, 10, 30, 90, 180])
 VOL_D = np.array([0.01364, 0.01661, 0.01744, 0.01825, 0.01884, 0.01918])
-AUC_D = np.array([0.6215, 0.7393, 0.7846, 0.8373, 0.8699, 0.8779])
+AUC_D = np.array([0.6363, 0.7678, 0.8162, 0.8745, 0.9064, 0.9157])
 HZ_I = np.array([5, 15, 30, 60, 120, 240])
-AUC_I = np.array([0.6659, 0.7386, 0.8160, 0.8688, 0.9030, 0.9207])
+AUC_I = np.array([0.6659, 0.7386, 0.8160, 0.8687, 0.9029, 0.9207])
 
 
 def banner(t):
@@ -164,13 +164,17 @@ def fig_fusion_graph():
         arrow(xs[k] + bw, 1.9, xm - 0.1, 2.5, color="#e6550d", rad=0.1)
         arrow(xs[k+1], 1.9, xm + 0.1, 2.5, color="#e6550d", rad=-0.1)
     # fusion bar
-    box(1.5, 4.1, 9.0, 0.8, "fuse = concat($e_1,\\dots,e_6,\\ \\Delta_1,\\dots,\\Delta_5$)",
+    box(1.5, 4.1, 9.0, 0.8, "fuse = concat($e_1,\\dots,e_6,\\ \\Delta_1,\\dots,\\Delta_5,\\ \\tilde c$)",
         blue, fs=9)
     for x in xs:
         arrow(x + bw / 2, 1.9, x + bw / 2, 4.1, color="#3182bd", rad=0.0)
     for k in range(5):
         xm = (xs[k] + xs[k+1]) / 2 + bw / 2
         arrow(xm, 3.2, xm, 4.1, color="#e6550d")
+    # static cross sectional context with its hierarchy gate
+    box(10.6, 1.0, 1.3, 1.9, "static\ncontext\n$\\tilde c = g\\odot c$\ngate $g=2\\sigma(w)$",
+        "#d9f0a3", fs=7)
+    arrow(11.25, 2.9, 11.0, 4.1, color="#31a354", rad=0.1)
     box(3.0, 5.4, 6.0, 0.8, "shared trunk (128, 64)", gray, fs=9)
     arrow(6.0, 4.9, 6.0, 5.4)
     box(1.5, 6.7, 4.0, 0.8, "6 volatility heads\n(curvature coupled)", green, fs=8.5)
@@ -215,7 +219,16 @@ def fig_drift():
     seq_dev = [to_device(s) for s in seqs]
     if net.scalers:
         seq_dev = net._apply_scalers(seq_dev)
-    c = net._forward(seq_dev, training=False)
+    # Supply a context vector when the trained model has a context branch.
+    ctx_dev = None
+    d_ctx = int(getattr(net, "d_ctx", 0) or 0)
+    if d_ctx > 0:
+        ctx = rng.standard_normal((N, d_ctx)).astype(np.float32)
+        ctx_dev = to_device(ctx)
+        sc = getattr(net, "ctx_scaler", None)
+        if sc is not None:
+            ctx_dev = (ctx_dev - sc[0]) / sc[1]
+    c = net._forward(seq_dev, ctx_dev, training=False)
     embs = [np.asarray(to_cpu(e)) for e in c["embs"]]
     mean_emb = np.stack([e.mean(0) for e in embs])
     drift_norm = [float(np.mean(np.linalg.norm(embs[k+1] - embs[k], axis=1)))
