@@ -285,6 +285,15 @@ volume, which removes thin stocks whose volatility is dominated by noise rather
 than signal. From prices it builds returns, realized volatility, volume and
 range features, and the cross sectional rank that forms the label.
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/derivations/stage_data.png}
+\caption{The data pipeline, from the ticker universe through the two downloads
+and the incremental cache to the liquidity filter, the features, and the cross
+sectional rank label.}
+\label{fig:stagedata}
+\end{figure}
+
 \subsection{Splitting With a Purge and an Embargo}
 
 Financial data is ordered in time and overlapping labels leak information across
@@ -294,6 +303,15 @@ test period, then embargo a further gap so no leakage survives. The stronger
 version is combinatorial purged cross validation, which forms several train and
 test arrangements while preserving the purge, and it gives the honest estimate
 that the single split can flatter.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/derivations/stage_split.png}
+\caption{The purged split on the time axis. The training block ends before the
+test block, a purge removes the training rows whose forward label window reaches
+into the test period, and an embargo adds a further gap.}
+\label{fig:stagesplit}
+\end{figure}
 
 \subsection{The Training Loop}
 
@@ -305,6 +323,15 @@ volatility heads, the curvature penalty that smooths the term structure, and the
 pinball loss on the quantile bands, so one backward pass trains classification
 and the price bands together.
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/derivations/stage_loop.png}
+\caption{The training loop for one epoch, shuffling the rows, forming batches,
+running the forward pass to the loss, backpropagating through the trunk and
+through time, and applying the Adam update, then repeating.}
+\label{fig:stageloop}
+\end{figure}
+
 \subsection{Validation and Feedback}
 
 At the end of every epoch the loop evaluates the loss on a held out validation
@@ -315,6 +342,15 @@ loop stops early and restores the best weights. This is the feedback that keeps
 the model from overfitting the training rows, and its effect is visible as the
 stepwise drops in the learning rate during a run.
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/derivations/stage_feedback.png}
+\caption{The validation feedback. A held out loss decides whether to save a new
+best or to advance the patience counter, which halves the learning rate after a
+short stall and stops early after a long one.}
+\label{fig:stagefeedback}
+\end{figure}
+
 \subsection{Testing}
 
 After training we measure the model on the held out test block that took no part
@@ -322,6 +358,15 @@ in fitting or in early stopping. We report the area under the ROC curve at every
 horizon, the coverage of the price bands, and we compare against a naive
 persistence baseline and a gradient boosted baseline, so a strong number has to
 beat both a trivial rule and a strong competitor before we trust it.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/derivations/stage_test.png}
+\caption{Testing on the held out block. The model is scored by area under the
+curve and band coverage, and the result is trusted only if it beats both the
+naive persistence baseline and the gradient boosted baseline.}
+\label{fig:stagetest}
+\end{figure}
 
 \subsection{Reporting and Saving}
 
@@ -331,6 +376,15 @@ so the shape of the result is visible at a glance. It then saves the trained
 weights and the feature scaler to a checkpoint, so the model can be reloaded for
 prediction or combined in the ensemble without retraining.
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/derivations/stage_report.png}
+\caption{Reporting and saving. The run prints the term structure, the area under
+the curve, the coverage, and a price cone, and it writes a checkpoint of the
+weights and the scaler for reuse and the ensemble.}
+\label{fig:stagereport}
+\end{figure}
+
 \subsection{Tuning and Modifying}
 
 The last stage closes the loop. We tune hyperparameters such as the number of
@@ -339,6 +393,15 @@ and the intraday bar interval, and we modify the design by adding features,
 switching the target horizon, refitting the ensemble weight, or warm starting a
 new run from a saved checkpoint. Each change sends us back to the data and
 feature stages, which is the outer iterate arrow in the figure.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/derivations/stage_tune.png}
+\caption{Tuning and modifying. Hyperparameter tuning and design changes both
+feed back into the data and feature stages, which is the outer iterate loop that
+closes the lifecycle.}
+\label{fig:stagetune}
+\end{figure}
 
 The sections that follow open each of these boxes and derive the mathematics
 they contain.

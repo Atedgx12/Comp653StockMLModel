@@ -468,6 +468,142 @@ def fig_clustering():
     fig.tight_layout(); fig.savefig(os.path.join(OUT, "clustering.png")); plt.close(fig)
 
 
+# 0g. Lifecycle subsection diagrams -----------------------------------------
+def _rbox(ax, x, y, w, h, text, color, fs=8):
+    from matplotlib.patches import FancyBboxPatch
+    ax.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.04",
+                 lw=1.1, edgecolor="#333333", facecolor=color))
+    ax.text(x + w/2, y + h/2, text, ha="center", va="center", fontsize=fs)
+
+
+def _arr(ax, x0, y0, x1, y1, color="#555555", rad=0.0):
+    from matplotlib.patches import FancyArrowPatch
+    ax.add_patch(FancyArrowPatch((x0, y0), (x1, y1), arrowstyle="-|>",
+                 mutation_scale=12, lw=1.1, color=color,
+                 connectionstyle=f"arc3,rad={rad}"))
+
+
+BL, GR, OR, PU, GY, RD = ("#c6dbef", "#c7e9c0", "#fdd0a2", "#dadaeb",
+                          "#e0e0e0", "#fcbba1")
+
+
+def fig_stage_data():
+    fig, ax = plt.subplots(figsize=(8.4, 2.2)); ax.set_xlim(0, 20); ax.set_ylim(0, 3); ax.axis("off")
+    _rbox(ax, 0.2, 1.0, 2.6, 1.0, "S&P 500\ntickers", GY)
+    _rbox(ax, 3.4, 1.7, 3.0, 0.9, "daily prices", BL)
+    _rbox(ax, 3.4, 0.4, 3.0, 0.9, "intraday 5m bars", BL)
+    _rbox(ax, 7.0, 1.0, 2.6, 1.0, "incremental\ncache", GY)
+    _rbox(ax, 10.2, 1.0, 3.0, 1.0, "universe filter\nmin dollar volume", OR)
+    _rbox(ax, 13.8, 1.0, 3.0, 1.0, "features: returns,\nvol, volume, range", GR)
+    _rbox(ax, 17.4, 1.0, 2.4, 1.0, "cross-sectional\nrank label", GR)
+    _arr(ax, 2.8, 1.5, 3.4, 2.1); _arr(ax, 2.8, 1.5, 3.4, 0.85)
+    _arr(ax, 6.4, 2.1, 7.0, 1.6); _arr(ax, 6.4, 0.85, 7.0, 1.4)
+    _arr(ax, 9.6, 1.5, 10.2, 1.5); _arr(ax, 13.2, 1.5, 13.8, 1.5)
+    _arr(ax, 16.8, 1.5, 17.4, 1.5)
+    ax.set_title("3.1 Data pipeline", fontsize=10)
+    fig.tight_layout(); fig.savefig(os.path.join(OUT, "stage_data.png")); plt.close(fig)
+
+
+def fig_stage_split():
+    fig, ax = plt.subplots(figsize=(8.4, 2.6)); ax.set_xlim(0, 20); ax.set_ylim(0, 4); ax.axis("off")
+    _rbox(ax, 0.3, 1.5, 9.0, 1.0, "TRAIN", GR, fs=10)
+    _rbox(ax, 9.4, 1.5, 1.6, 1.0, "purge", RD, fs=8)
+    _rbox(ax, 11.1, 1.5, 1.6, 1.0, "embargo", GY, fs=8)
+    _rbox(ax, 12.8, 1.5, 6.9, 1.0, "TEST", BL, fs=10)
+    # a forward label window near the boundary that the purge removes
+    _arr(ax, 8.9, 2.9, 10.6, 2.9, color="#cb181d")
+    ax.text(8.0, 3.3, "label window reaching into test (removed by purge)",
+            color="#cb181d", fontsize=8)
+    ax.annotate("", xy=(9.35, 1.4), xytext=(9.35, 0.6),
+                arrowprops=dict(arrowstyle="-", color="#333"))
+    ax.text(2.0, 0.7, "time", fontsize=9)
+    ax.annotate("", xy=(19.5, 0.9), xytext=(0.3, 0.9),
+                arrowprops=dict(arrowstyle="-|>", color="#333"))
+    ax.set_title("3.2 Purged split with an embargo", fontsize=10)
+    fig.tight_layout(); fig.savefig(os.path.join(OUT, "stage_split.png")); plt.close(fig)
+
+
+def fig_stage_loop():
+    fig, ax = plt.subplots(figsize=(8.4, 2.4)); ax.set_xlim(0, 20); ax.set_ylim(0, 3); ax.axis("off")
+    steps = ["shuffle rows", "mini batch", "forward\n$\\to$ loss",
+             "backward\n(trunk + BPTT)", "Adam update"]
+    cols = [GY, BL, GR, OR, PU]
+    xs = np.linspace(0.3, 16.3, 5)
+    for x, s, c in zip(xs, steps, cols):
+        _rbox(ax, x, 1.1, 3.0, 1.0, s, c)
+        xs2 = x
+    for i in range(4):
+        _arr(ax, xs[i]+3.0, 1.6, xs[i+1], 1.6)
+    # loop back arrow
+    _arr(ax, xs[-1]+1.5, 1.1, xs[0]+1.5, 1.1, color="#3182bd", rad=0.5)
+    ax.text(9.5, 0.1, "repeat each epoch", color="#3182bd", fontsize=9, ha="center")
+    ax.set_title("3.3 Training loop", fontsize=10)
+    fig.tight_layout(); fig.savefig(os.path.join(OUT, "stage_loop.png")); plt.close(fig)
+
+
+def fig_stage_feedback():
+    fig, ax = plt.subplots(figsize=(8.4, 2.6)); ax.set_xlim(0, 20); ax.set_ylim(0, 4); ax.axis("off")
+    _rbox(ax, 0.3, 1.5, 3.2, 1.0, "train one\nepoch", GR)
+    _rbox(ax, 4.3, 1.5, 3.4, 1.0, "validation loss\n(held out)", BL)
+    _rbox(ax, 8.5, 2.4, 5.2, 1.0, "new best: save weights,\nreset patience", GR)
+    _rbox(ax, 8.5, 0.6, 5.2, 1.0, "no improvement:\npatience counter ++", RD)
+    _rbox(ax, 14.4, 2.4, 5.3, 1.0, "40 stalls: halve LR", OR)
+    _rbox(ax, 14.4, 0.6, 5.3, 1.0, "150 stalls: stop,\nrestore best", RD)
+    _arr(ax, 3.5, 2.0, 4.3, 2.0); _arr(ax, 7.7, 2.0, 8.5, 2.85)
+    _arr(ax, 7.7, 2.0, 8.5, 1.1); _arr(ax, 13.7, 2.9, 14.4, 2.9)
+    _arr(ax, 13.7, 1.1, 14.4, 1.1)
+    _arr(ax, 11.1, 0.6, 4.5, 1.45, color="#3182bd", rad=0.3)
+    ax.set_title("3.4 Validation and feedback", fontsize=10)
+    fig.tight_layout(); fig.savefig(os.path.join(OUT, "stage_feedback.png")); plt.close(fig)
+
+
+def fig_stage_test():
+    fig, ax = plt.subplots(figsize=(8.4, 2.4)); ax.set_xlim(0, 20); ax.set_ylim(0, 3); ax.axis("off")
+    _rbox(ax, 0.3, 1.0, 3.0, 1.0, "held-out\ntest block", BL)
+    _rbox(ax, 4.0, 1.0, 3.2, 1.0, "model predict", GR)
+    _rbox(ax, 7.9, 1.0, 4.0, 1.0, "AUC by horizon,\nband coverage", OR)
+    _rbox(ax, 12.6, 1.9, 3.4, 0.9, "naive baseline", GY)
+    _rbox(ax, 12.6, 0.2, 3.4, 0.9, "LightGBM baseline", GY)
+    _rbox(ax, 16.6, 1.0, 3.1, 1.0, "trust only if it\nbeats both", PU)
+    _arr(ax, 3.3, 1.5, 4.0, 1.5); _arr(ax, 7.2, 1.5, 7.9, 1.5)
+    _arr(ax, 11.9, 1.7, 12.6, 2.2); _arr(ax, 11.9, 1.3, 12.6, 0.75)
+    _arr(ax, 16.0, 2.3, 16.6, 1.7); _arr(ax, 16.0, 0.65, 16.6, 1.35)
+    ax.set_title("3.5 Testing against baselines", fontsize=10)
+    fig.tight_layout(); fig.savefig(os.path.join(OUT, "stage_test.png")); plt.close(fig)
+
+
+def fig_stage_report():
+    fig, ax = plt.subplots(figsize=(8.4, 2.6)); ax.set_xlim(0, 20); ax.set_ylim(0, 4); ax.axis("off")
+    _rbox(ax, 0.3, 1.5, 3.0, 1.0, "trained run", GR)
+    outs = ["term structure", "AUC by horizon", "band coverage", "price cone"]
+    ys = [3.1, 2.2, 1.3, 0.4]
+    for o, y in zip(outs, ys):
+        _rbox(ax, 4.2, y, 3.4, 0.8, o, BL, fs=8)
+        _arr(ax, 3.3, 2.0, 4.2, y+0.4)
+    _rbox(ax, 8.6, 1.9, 4.2, 1.0, "checkpoint:\nweights + scaler", OR)
+    _rbox(ax, 13.6, 1.9, 5.9, 1.0, "reload for prediction\nor ensemble", PU)
+    _arr(ax, 3.3, 1.6, 8.6, 2.4); _arr(ax, 12.8, 2.4, 13.6, 2.4)
+    ax.set_title("3.6 Reporting and saving", fontsize=10)
+    fig.tight_layout(); fig.savefig(os.path.join(OUT, "stage_report.png")); plt.close(fig)
+
+
+def fig_stage_tune():
+    fig, ax = plt.subplots(figsize=(8.4, 2.6)); ax.set_xlim(0, 20); ax.set_ylim(0, 4); ax.axis("off")
+    _rbox(ax, 0.3, 2.3, 9.2, 1.1,
+          "tune: epochs, LR schedule, smoothing,\nnumber of tickers, bar interval", OR)
+    _rbox(ax, 0.3, 0.7, 9.2, 1.1,
+          "modify: add features, switch horizon,\nrefit ensemble weight, warm start", GR)
+    _rbox(ax, 12.0, 1.5, 4.2, 1.1, "back to data\nand features", BL)
+    _arr(ax, 9.5, 2.85, 12.0, 2.1); _arr(ax, 9.5, 1.25, 12.0, 1.9)
+    _arr(ax, 16.2, 2.05, 18.6, 2.05, color="#e6550d")
+    _arr(ax, 18.6, 2.05, 18.6, 3.6, color="#e6550d")
+    _arr(ax, 18.6, 3.6, 0.3, 3.6, color="#e6550d")
+    _arr(ax, 0.3, 3.6, 0.3, 3.4, color="#e6550d")
+    ax.text(9.0, 3.75, "iterate", color="#e6550d", fontsize=9, ha="center")
+    ax.set_title("3.7 Tuning and modifying", fontsize=10)
+    fig.tight_layout(); fig.savefig(os.path.join(OUT, "stage_tune.png")); plt.close(fig)
+
+
 # 1. Logistic sigmoid with worked points ------------------------------------
 def fig_sigmoid():
     banner("Worked example: logistic branch")
@@ -763,6 +899,13 @@ if __name__ == "__main__":
     fig_fusion_graph()
     fig_drift()
     fig_clustering()
+    fig_stage_data()
+    fig_stage_split()
+    fig_stage_loop()
+    fig_stage_feedback()
+    fig_stage_test()
+    fig_stage_report()
+    fig_stage_tune()
     fig_branch_lr()
     fig_branch_nb()
     fig_branch_mlp()
