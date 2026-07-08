@@ -94,10 +94,13 @@ def parse_args():
                    help="Drop names below this median daily dollar volume in "
                         "dollars, a proxy for market cap and liquidity. "
                         "Example: 50000000 for a 50 million dollar floor.")
-    p.add_argument("--target", choices=["return", "vol"], default="return",
+    p.add_argument("--target", choices=["return", "vol", "quantile"],
+                   default="return",
                    help="Prediction target. 'return' classifies forward return "
                         "direction. 'vol' classifies forward realized "
-                        "volatility, which clusters and is far more predictable.")
+                        "volatility. 'quantile' predicts the 5/25/50/75/95 "
+                        "percent forward return band, a price range cone, using "
+                        "the same full feature pipeline.")
     p.add_argument("--hierarchy-gate", action="store_true", dest="hierarchy_gate",
                    help="Add a learnable scalar gate per hierarchy layer, "
                         "trained by backprop, so the model learns how much to "
@@ -381,6 +384,59 @@ def naive_persistence_baseline(X: np.ndarray, y: np.ndarray, dates: np.ndarray,
     return auc, ref
 
 
+def run_quantile(X_sel, y_all, dates, args, purge):
+    """Train the quantile band model on the full feature set and report.
+
+    Predicts the 5/25/50/75/95 percent quantiles of the forward log return at
+    the requested horizon, which turns into a price range cone.  Uses a purged
+    temporal split so no forward return label leaks across the boundary.
+    """
+    from ucn.models.quantile_net import (QuantileTermStructureNet,
+                                          DEFAULT_QUANTILES)
+    print("\n[Quantile] Predicting the forward return band "
+          "(price range cone) ...", flush=True)
+    unique_dates = np.sort(np.unique(dates))
+    split_idx = int(0.80 * len(unique_dates))
+    split_dt  = unique_dates[split_idx]
+    purge_dt  = unique_dates[max(0, split_idx - purge)]
+    tr = dates < purge_dt; te = dates >= split_dt
+
+    mu = X_sel[tr].mean(0); sd = X_sel[tr].std(0) + 1e-9
+    Xtr = (X_sel[tr] - mu) / sd; Xte = (X_sel[te] - mu) / sd
+    Ytr = y_all[tr].reshape(-1, 1); Yte = y_all[te].reshape(-1, 1)
+    print(f"  train={tr.sum():,}  test={te.sum():,}  purge={purge}", flush=True)
+
+    net = QuantileTermStructureNet(horizons=[args.horizon], epochs=args.epochs,
+                                   patience=40, verbose=20)
+    net.fit(Xtr, Ytr)
+    Q = net.predict_quantiles(Xte)[:, 0, :]   # (N, Q)
+    quants = DEFAULT_QUANTILES
+    y = Yte[:, 0]
+
+    lo, hi = Q[:, 0], Q[:, -1]
+    lo50, hi50 = Q[:, 1], Q[:, 3]
+    cov90 = float(((y >= lo) & (y <= hi)).mean())
+    cov50 = float(((y >= lo50) & (y <= hi50)).mean())
+    width90 = float((hi - lo).mean())
+    med = float(Q[:, 2].mean())
+
+    print("\n=== Quantile band results ===")
+    print(f"  90% band coverage: {cov90:.3f}  (target 0.90)")
+    print(f"  50% band coverage: {cov50:.3f}  (target 0.50)")
+    print(f"  mean 90% band width in log return: {width90:.4f}")
+    print(f"  median forecast q50 mean: {med:+.5f}  "
+          f"(near zero means no directional edge, as expected)")
+
+    P0 = 100.0
+    avg_q = Q.mean(0)
+    print(f"\n  Average predicted price band for a $100 stock at "
+          f"{args.horizon} day horizon:")
+    for tau, qq in zip(quants, avg_q):
+        print(f"    {int(tau*100):>3}th percentile:  ${P0 * float(np.exp(qq)):.2f}")
+    print("\n  This is the honest output: a range the price should occupy at "
+          "each confidence level, not a single predicted price.")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────
 
 def main():
@@ -445,7 +501,17 @@ def main():
         # Extract ticker column for LSTM (not a training feature)
         ticker_ids = X_df.pop("_ticker").values if "_ticker" in X_df.columns else None
         X_all = X_df.values.astype(np.float64)
-        y_all = y_df.values.astype(int)
+        # The quantile target is a continuous forward return; every other
+        # target is an integer class label.
+        if args.target == "quantile":
+            y_all = y_df.values.astype(np.float64)
+        else:
+            y_all = y_df.values.astype(int)
+
+    # For the quantile target the label is continuous, so feature ranking by
+    # mutual information uses a median split proxy purely to score features.
+    y_rank = ((y_all > np.median(y_all)).astype(int)
+              if args.target == "quantile" else y_all)
 
     # 3. Feature selection
     price_names = [f for f in feat_names if f != "sent_rank"]
@@ -465,7 +531,7 @@ def main():
         recent_cut = np.sort(np.unique(dates))[int(0.70 * len(np.unique(dates)))]
         recent_m   = dates >= recent_cut
         X_rec = X_all[recent_m][:, price_idx]
-        y_rec = y_all[recent_m]
+        y_rec = y_rank[recent_m]
         if len(X_rec) > 500:
             dtmp  = lgb.Dataset(X_rec, label=y_rec)
             bst   = lgb.train(
@@ -479,10 +545,10 @@ def main():
                 print(f"    {f:30s}  gain={imp[f]:.1f}")
         else:
             selected, _ = select_features_by_mi(
-                X_all[:, price_idx], y_all, price_names, k=mi_k)
+                X_all[:, price_idx], y_rank, price_names, k=mi_k)
     else:
         selected, mi_scores = select_features_by_mi(
-            X_all[:, price_idx], y_all, price_names, k=mi_k)
+            X_all[:, price_idx], y_rank, price_names, k=mi_k)
 
     sel_idx     = [price_names.index(f) for f in selected]
     X_sel_price = X_all[:, sel_idx]
@@ -511,6 +577,13 @@ def main():
 
     print(f"  Using {len(selected)} features"
           + (" + VADER sentiment" if has_sent else ""), flush=True)
+
+    # Quantile target: predict the forward return band on the same full feature
+    # pipeline, then stop. This is a price range cone, not a classification.
+    if args.target == "quantile":
+        purge_positions = int(np.ceil(args.horizon / max(args.stride, 1)))
+        run_quantile(X_sel, y_all, dates, args, purge_positions)
+        return
 
     # 4. Build config
     cfg_cv = UCNConfig(

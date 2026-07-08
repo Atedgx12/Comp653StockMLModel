@@ -185,18 +185,27 @@ def make_features(
     else:
         feat_names_out = feat_names
 
-    label_kind = "high vs low volatility" if target == "vol" else \
-                 f"top {int(top_pct*100)}% vs bottom {int(bottom_pct*100)}%"
-    print(f"  Building labels ({label_kind}) ...", flush=True)
-    fwd_rank = fwd_raw.groupby(fwd_raw.index).rank(pct=True)
-    y = pd.Series(np.nan, index=fwd_raw.index)
-    y[fwd_rank >= (1.0 - top_pct)]  = 1
-    y[fwd_rank <= bottom_pct]        = 0
-    keep     = y.notna()
-    X_final  = X_ranked[keep].copy()
-    y_final  = y[keep].astype(int)
-    # Attach ticker column for LSTM sequence building (not used in training directly)
-    X_final["_ticker"] = ticker_col[keep]
+    if target == "quantile":
+        # Continuous forward log return, the target for quantile regression.
+        print("  Building labels (continuous forward return for quantiles) ...",
+              flush=True)
+        keep     = fwd_raw.notna()
+        X_final  = X_ranked[keep].copy()
+        y_final  = fwd_raw[keep].astype(float)
+        X_final["_ticker"] = ticker_col[keep]
+    else:
+        label_kind = "high vs low volatility" if target == "vol" else \
+                     f"top {int(top_pct*100)}% vs bottom {int(bottom_pct*100)}%"
+        print(f"  Building labels ({label_kind}) ...", flush=True)
+        fwd_rank = fwd_raw.groupby(fwd_raw.index).rank(pct=True)
+        y = pd.Series(np.nan, index=fwd_raw.index)
+        y[fwd_rank >= (1.0 - top_pct)]  = 1
+        y[fwd_rank <= bottom_pct]        = 0
+        keep     = y.notna()
+        X_final  = X_ranked[keep].copy()
+        y_final  = y[keep].astype(int)
+        # Attach ticker column for LSTM sequence building (not a training feature)
+        X_final["_ticker"] = ticker_col[keep]
 
     # Stride subsampling: keep only every stride-th unique date to reduce
     # label autocorrelation caused by overlapping forward-return windows.
