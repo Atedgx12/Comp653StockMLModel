@@ -184,7 +184,7 @@ def make_features(
     y[fwd_rank >= (1.0 - top_pct)]  = 1
     y[fwd_rank <= bottom_pct]        = 0
     keep     = y.notna()
-    X_final  = X_ranked[keep]
+    X_final  = X_ranked[keep].copy()
     y_final  = y[keep].astype(int)
     # Attach ticker column for LSTM sequence building (not used in training directly)
     X_final["_ticker"] = ticker_col[keep]
