@@ -882,10 +882,10 @@ horizons. Working the second difference through the measured daily term
 structure the interior bends are small, which confirms the curve is already
 nearly smooth,
 \begin{align*}
-\text{at } 5\text{d}:\ -0.1100, \quad
-\text{at } 10\text{d}:\ -0.0400, \quad
-\text{at } 30\text{d}:\ -0.0400, \quad
-\text{at } 90\text{d}:\ +0.0100.
+\text{at } 5\text{d}:\ -0.0725, \quad
+\text{at } 10\text{d}:\ +0.0074, \quad
+\text{at } 30\text{d}:\ -0.0201, \quad
+\text{at } 90\text{d}:\ -0.0246.
 \end{align*}
 
 Figure \ref{fig:auc} shows the area under the curve at every horizon for both the
@@ -896,8 +896,8 @@ volatility clustering argument predicts.
 \centering
 \includegraphics[width=0.92\textwidth]{figures/derivations/auc_horizon.png}
 \caption{Test area under the curve by horizon. The daily scale climbs from about
-$0.70$ at one day to about $0.97$ at the long horizons, and the intraday scale
-climbs from about $0.66$ at five minutes to about $0.90$ at four hours.}
+$0.62$ at one day to about $0.88$ at the long horizons, and the intraday scale
+climbs from about $0.67$ at five minutes to about $0.92$ at four hours.}
 \label{fig:auc}
 \end{figure}
 
@@ -1089,17 +1089,18 @@ flattens the cone.
 
 Figure \ref{fig:cone} shows the cone interacting with the data projection. We
 build the band from the measured volatility term structure using the normal
-quantiles, and we project the data by simulating four thousand price paths at the
-same volatility. The shaded model cone and the empirical quantiles of the
-simulated paths track each other closely, and the fraction of paths that finish
-inside the five to ninety five band is $0.899$, which matches the nominal ninety
-percent. Working the one hundred eighty day edges through $P = 100\,e^{q}$ gives
+quantiles, and we project the data by simulating four thousand price paths under
+the same rising volatility schedule. The shaded model cone and the empirical
+quantiles of the simulated paths track each other closely, and the fraction of
+paths that finish inside the five to ninety five band is $0.901$, which matches
+the nominal ninety percent. Working the one hundred eighty day edges through
+$P = 100\,e^{q}$ gives
 \begin{align*}
-\text{5th } &\$74.01 \ (\text{data } \$73.74), &
-\text{25th } &\$88.39 \ (\text{data } \$88.22), \\
-\text{50th } &\$100.00 \ (\text{data } \$100.35), &
-\text{75th } &\$113.14 \ (\text{data } \$114.09), \\
-\text{95th } &\$135.12 \ (\text{data } \$134.91). & &
+\text{5th } &\$66.36 \ (\text{data } \$66.32), &
+\text{25th } &\$84.52 \ (\text{data } \$84.25), \\
+\text{50th } &\$100.00 \ (\text{data } \$100.67), &
+\text{75th } &\$118.32 \ (\text{data } \$119.74), \\
+\text{95th } &\$150.70 \ (\text{data } \$150.32). & &
 \end{align*}
 
 \begin{figure}[H]

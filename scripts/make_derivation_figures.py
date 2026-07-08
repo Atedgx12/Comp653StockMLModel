@@ -19,9 +19,9 @@ plt.rcParams.update({"figure.dpi": 150, "font.size": 11,
 # Measured results carried in from the training runs -----------------------
 HZ_D = np.array([1, 5, 10, 30, 90, 180])
 VOL_D = np.array([0.01364, 0.01661, 0.01744, 0.01825, 0.01884, 0.01918])
-AUC_D = np.array([0.70, 0.88, 0.95, 0.98, 0.97, 0.97])
+AUC_D = np.array([0.6215, 0.7393, 0.7846, 0.8373, 0.8699, 0.8779])
 HZ_I = np.array([5, 15, 30, 60, 120, 240])
-AUC_I = np.array([0.6586, 0.7291, 0.8064, 0.8541, 0.8898, 0.9016])
+AUC_I = np.array([0.6659, 0.7386, 0.8160, 0.8688, 0.9030, 0.9207])
 
 
 def banner(t):
