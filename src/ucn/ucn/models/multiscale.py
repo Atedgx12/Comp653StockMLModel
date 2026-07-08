@@ -25,6 +25,7 @@ from typing import List, Optional
 import numpy as _np
 from ..backend import xp as np, to_device, to_cpu, new_rng
 from ..utils import sigmoid
+from ..training.metrics import roc_auc
 
 
 DEFAULT_WINDOWS: List[int] = [1, 5, 10, 30, 90, 180]
@@ -329,6 +330,12 @@ class MultiScaleTermStructureNet:
         idx = _np.arange(N - n_val)
         best = 1e18; best_p = None; bad = 0
         cur_lr = self.lr; plateau = 0
+        # Fixed slices for monitoring train and validation AUC on log steps.
+        seq_va = [seq_list[k][va] for k in range(self.B)]
+        Yc_va = to_cpu(Y[va])
+        n_eval = min(N - n_val, 16384)
+        seq_tre = [seq_list[k][0:n_eval] for k in range(self.B)]
+        Yc_tre = to_cpu(Y[0:n_eval])
         for epoch in range(self.epochs):
             self._idx_rng.shuffle(idx)
             ep_bce = 0.0; ep_acc = 0.0; n_b = 0
@@ -345,12 +352,11 @@ class MultiScaleTermStructureNet:
                 Pbc = to_cpu(Pb); Ybc = to_cpu(Y[tr][b])
                 ep_acc += float(((Pbc >= 0.5) == (Ybc >= 0.5)).mean())
                 n_b += 1
-            cval = self._forward([seq_list[k][va] for k in range(self.B)],
-                                 training=False)
+            cval = self._forward(seq_va, training=False)
             P = cval["P"]; eps = 1e-12
             bce = float(to_cpu(-(Y[va]*np.log(P+eps)
                                  + (1-Y[va])*np.log(1-P+eps)).mean()))
-            Pc = to_cpu(P); Yc = to_cpu(Y[va])
+            Pc = to_cpu(P); Yc = Yc_va
             val_acc = float(((Pc >= 0.5) == (Yc >= 0.5)).mean())
             tr_bce = ep_bce / max(n_b, 1)
             tr_acc = ep_acc / max(n_b, 1)
@@ -367,10 +373,16 @@ class MultiScaleTermStructureNet:
                     plateau = 0
             if self.verbose and (epoch + 1) % self.verbose == 0:
                 marker = " *" if bad == 0 else ""
+                val_auc = float(_np.mean([roc_auc(Yc[:, b], Pc[:, b])
+                                          for b in range(self.B)]))
+                Ptre = to_cpu(self._forward(seq_tre, training=False)["P"])
+                tr_auc = float(_np.mean([roc_auc(Yc_tre[:, b], Ptre[:, b])
+                                         for b in range(self.B)]))
                 print(f"  Epoch {epoch+1:4d}/{self.epochs}  "
-                      f"CE={tr_bce:.5f}  acc={tr_acc:.4f}  "
+                      f"CE={tr_bce:.5f}  acc={tr_acc:.4f}  AUC={tr_auc:.4f}  "
                       f"val_CE={bce:.5f}  val_acc={val_acc:.4f}  "
-                      f"LR={cur_lr:.2e}{marker}", flush=True)
+                      f"val_AUC={val_auc:.4f}  LR={cur_lr:.2e}{marker}",
+                      flush=True)
             if self.patience and bad >= self.patience:
                 if self.verbose:
                     print(f"  Early stop epoch {epoch+1}", flush=True)
