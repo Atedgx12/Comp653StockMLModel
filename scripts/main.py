@@ -130,7 +130,8 @@ def parse_args():
 def walk_forward_cv(X: np.ndarray, y: np.ndarray, dates: np.ndarray,
                     cfg: UCNConfig, n_splits: int = 5,
                     sample_weights: np.ndarray = None,
-                    seqs: np.ndarray = None) -> tuple:
+                    seqs: np.ndarray = None,
+                    purge: int = 1) -> tuple:
     unique_dates = np.sort(np.unique(dates))
     fold_size    = len(unique_dates) // (n_splits + 1)
     accs, aucs   = [], []
@@ -138,7 +139,6 @@ def walk_forward_cv(X: np.ndarray, y: np.ndarray, dates: np.ndarray,
     for fold in range(n_splits):
         tr_end = unique_dates[(fold + 1) * fold_size]
         te_end = unique_dates[min((fold + 2) * fold_size, len(unique_dates) - 1)]
-        purge  = getattr(cfg, 'horizon', 1)
         purge_start = unique_dates[max(0, (fold + 1) * fold_size - purge)]
         tr_m   = dates < purge_start
         te_m   = (dates >= tr_end) & (dates < te_end)
@@ -179,7 +179,8 @@ def purged_cpcv(X: np.ndarray, y: np.ndarray, dates: np.ndarray,
                 cfg: UCNConfig, n_groups: int = 6, n_test_groups: int = 2,
                 embargo_frac: float = 0.01,
                 sample_weights: np.ndarray = None,
-                seqs: np.ndarray = None) -> tuple:
+                seqs: np.ndarray = None,
+                purge: int = 1) -> tuple:
     """
     Combinatorial purged cross validation in the style of Lopez de Prado.
 
@@ -211,7 +212,7 @@ def purged_cpcv(X: np.ndarray, y: np.ndarray, dates: np.ndarray,
     accs, aucs = [], []
 
     print(f"[CPCV] {n_groups} blocks, {n_test_groups} test per split, "
-          f"{len(combos)} paths, purge={horizon}d, embargo={embargo}d",
+          f"{len(combos)} paths, purge={purge}d, embargo={embargo}d",
           flush=True)
 
     for ci, test_groups in enumerate(combos):
@@ -224,8 +225,7 @@ def purged_cpcv(X: np.ndarray, y: np.ndarray, dates: np.ndarray,
             g_start_i = np.searchsorted(unique_dates, groups[g][0])
             g_end_i   = np.searchsorted(unique_dates, groups[g][-1])
             # Purge training rows whose label window reaches into this block.
-            purge_lo = unique_dates[max(0, g_start_i - horizon)]
-            purge_hi = unique_dates[min(n - 1, g_end_i)]
+            purge_lo = unique_dates[max(0, g_start_i - purge)]
             # Embargo a short band immediately after the block.
             emb_hi   = unique_dates[min(n - 1, g_end_i + embargo)]
             drop = (dates >= purge_lo) & (dates <= emb_hi)
@@ -413,6 +413,7 @@ def main():
         use_lstm=args.use_lstm,
         lstm_lookback=args.lstm_lookback,
         lstm_hidden=args.lstm_hidden,
+        horizon=args.horizon,
     )
     cfg_full = UCNConfig(
         hidden_sizes=(256, 128, 64),
@@ -430,6 +431,7 @@ def main():
         use_lstm=args.use_lstm,
         lstm_lookback=args.lstm_lookback,
         lstm_hidden=args.lstm_hidden,
+        horizon=args.horizon,
     )
 
     # 5a. Compute sample weights early — needed by LSTM alignment and CV
@@ -472,6 +474,11 @@ def main():
     w_sub  = sample_weights[sub_m] if sample_weights is not None else None
     seqs_sub = seqs_all[sub_m] if seqs_all is not None else None
 
+    # The label looks horizon trading days ahead, but the CV runs on
+    # stride subsampled dates, so the purge must be expressed in kept date
+    # positions.  Rounding up guarantees the whole label window is removed.
+    purge_positions = int(np.ceil(args.horizon / max(args.stride, 1)))
+
     if args.use_cpcv:
         print(f"\n[CV] Combinatorial purged CV on {sub_m.sum():,} rows "
               f"(first 50% of dates) ...", flush=True)
@@ -481,7 +488,8 @@ def main():
             n_test_groups=args.cpcv_test_groups,
             embargo_frac=args.embargo_frac,
             sample_weights=w_sub,
-            seqs=seqs_sub)
+            seqs=seqs_sub,
+            purge=purge_positions)
     else:
         print(f"\n[CV] Walk-forward on {sub_m.sum():,} rows "
               f"(first 50% of dates) ...", flush=True)
@@ -489,7 +497,8 @@ def main():
             X_sel[sub_m], y_all[sub_m], dates[sub_m],
             cfg_cv, n_splits=args.n_cv_splits,
             sample_weights=w_sub,
-            seqs=seqs_sub)
+            seqs=seqs_sub,
+            purge=purge_positions)
 
     pd.DataFrame([{"acc": cv_acc, "auc": cv_auc}],
                  index=["UCN"]).to_csv(
