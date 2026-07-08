@@ -86,6 +86,14 @@ def parse_args():
                         "discard the rest as noise. Omit to keep all features. "
                         "For a near-efficient signal a small k (15-20) reduces "
                         "overfitting by shrinking the input dimension.")
+    p.add_argument("--drop-delisted", action="store_true",
+                   help="Drop delisted or flat names whose recent returns have "
+                        "no variance (forward filled dead tickers).")
+    p.add_argument("--min-dollar-vol", type=float, default=None,
+                   dest="min_dollar_vol",
+                   help="Drop names below this median daily dollar volume in "
+                        "dollars, a proxy for market cap and liquidity. "
+                        "Example: 50000000 for a 50 million dollar floor.")
     p.add_argument("--no-sent",     action="store_true")
     p.add_argument("--checkpoint",  default=None)
     p.add_argument("--cv-only",     action="store_true")
@@ -328,6 +336,17 @@ def main():
     sent_df = None if args.no_sent else fetch_sentiment(
                   tickers, close.index, cache_dir=OUT_DIR)
     vol_df  = download_volume(tickers, cache_dir=OUT_DIR)
+
+    # 1b. Clean the universe: drop delisted or flat names and, when a
+    # threshold is set, illiquid low size names by median dollar volume.
+    if args.drop_delisted or args.min_dollar_vol is not None:
+        from ucn.data.ingestion import filter_universe
+        close = filter_universe(
+            close, vol_df,
+            drop_delisted=args.drop_delisted,
+            min_dollar_vol=args.min_dollar_vol)
+        if vol_df is not None:
+            vol_df = vol_df.reindex(columns=close.columns)
 
     # 2. Features + labels — load from FeatureStore or recompute
     if args.use_store:

@@ -292,3 +292,58 @@ def fetch_sentiment(
             .ffill(limit=3).fillna(0.0))
     sent.to_parquet(cache)
     return sent
+
+
+def filter_universe(
+    close: pd.DataFrame,
+    vol: Optional[pd.DataFrame] = None,
+    drop_delisted: bool = True,
+    stale_window: int = 60,
+    min_dollar_vol: Optional[float] = None,
+) -> pd.DataFrame:
+    """Drop delisted and low liquidity names from the price panel.
+
+    Two filters are applied.
+
+    Delisting shows up in a forward filled panel as a flat price tail, because
+    once a stock stops trading its last value is carried forward and every
+    later return is zero.  I flag a ticker as delisted when the standard
+    deviation of its returns over the last stale_window rows is essentially
+    zero, and drop it.  This also removes survivorship style artifacts where a
+    dead name would otherwise sit in the cross section as a frozen line.
+
+    Market capitalization is not in the panel, but dollar volume, price times
+    shares traded, is a strong proxy for both size and liquidity.  When a
+    threshold is given I compute each ticker's median daily dollar volume over
+    the whole sample and drop the names below it, which removes the small and
+    thinly traded stocks that add noise to the cross sectional ranks.
+
+    Returns the filtered close frame.  The caller reindexes volume and
+    sentiment to the surviving columns.
+    """
+    keep = list(close.columns)
+
+    if drop_delisted:
+        rets = np.log(close / close.shift(1))
+        tail_std = rets.tail(stale_window).std()
+        alive = tail_std[tail_std > 1e-8].index.tolist()
+        dropped = [t for t in keep if t not in alive]
+        keep = [t for t in keep if t in alive]
+        if dropped:
+            print(f"  Universe filter: dropped {len(dropped)} delisted or "
+                  f"flat names.", flush=True)
+
+    if min_dollar_vol is not None and vol is not None:
+        common = [t for t in keep if t in vol.columns]
+        dollar = (close[common] * vol[common].reindex(close.index).fillna(0.0))
+        med = dollar.median()
+        liquid = med[med >= min_dollar_vol].index.tolist()
+        dropped = [t for t in keep if t not in liquid]
+        keep = [t for t in keep if t in liquid]
+        if dropped:
+            print(f"  Universe filter: dropped {len(dropped)} names below "
+                  f"${min_dollar_vol/1e6:.0f}M median daily dollar volume.",
+                  flush=True)
+
+    print(f"  Universe filter: {len(keep)} tickers remain.", flush=True)
+    return close[keep]
