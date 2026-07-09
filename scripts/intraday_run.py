@@ -263,7 +263,7 @@ def run(args):
                 continue
             vals = np.asarray(vals, dtype=float)
             yv = vals[:nh]; rv = vals[nh:]
-            if np.isnan(yv).any() or np.isnan(rv).any():
+            if np.isnan(yv).all() or np.isnan(rv).any():
                 continue
             # The forward label already stays within the trading day. The
             # lookback window may cross the overnight gap and is padded when
@@ -346,7 +346,10 @@ def run(args):
     bands = net.predict_bands(seq_te, ctx=ctx_te)
 
     print("\n=== Per-horizon intraday test AUC ===")
-    aucs = [roc_auc(Yte[:, b], P[:, b]) for b in range(B)]
+    aucs = []
+    for b in range(B):
+        m = ~np.isnan(Yte[:, b])
+        aucs.append(roc_auc(Yte[m, b], P[m, b]) if m.sum() > 10 else float("nan"))
     for w, a in zip(WINDOWS_MIN, aucs):
         print(f"  {w:>4}m   AUC={a:.4f}")
     ascii_bars([f"{w}m" for w in WINDOWS_MIN], aucs,

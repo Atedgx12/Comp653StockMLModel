@@ -53,6 +53,8 @@ def selective_accuracy(P, Y, labels, unit):
     print("  horizon " + "".join(f"  cov{int(c*100):>3}%" for c in covs))
     for b, w in enumerate(labels):
         p = P[:, b]; y = Y[:, b]
+        m = ~_np.isnan(y)
+        p = p[m]; y = y[m]
         order = _np.argsort(-_np.abs(p - 0.5))
         row = f"  {str(w)+unit:>7}"
         for c in covs:
@@ -386,7 +388,7 @@ def run(args):
     print("[Sequences] Building six day-window branches ...", flush=True)
     seqs, valid = build_multiscale_sequences(close, vol, index, ticker_col, windows)
 
-    keep = valid & ~np.isnan(Y).any(axis=1) & ~np.isnan(Yret).any(axis=1)
+    keep = valid & ~np.isnan(Y).all(axis=1) & ~np.isnan(Yret).any(axis=1)
 
     # Static cross sectional context (the rich hierarchy signal) fused into the
     # trunk, built for every grid row and gated inside the model.
@@ -504,7 +506,10 @@ def run(args):
     bands = net.predict_bands(seq_te, ctx=ctx_te)
 
     print("\n=== Per-horizon test AUC (multi-scale) ===")
-    aucs = [roc_auc(Yte[:, b], P[:, b]) for b in range(len(windows))]
+    aucs = []
+    for b in range(len(windows)):
+        m = ~np.isnan(Yte[:, b])
+        aucs.append(roc_auc(Yte[m, b], P[m, b]) if m.sum() > 10 else float("nan"))
     for w, a in zip(windows, aucs):
         print(f"  {w:>4}d   AUC={a:.4f}")
     ascii_bars([f"{w}d" for w in windows], aucs,

@@ -31,6 +31,16 @@ from ..training.metrics import roc_auc
 DEFAULT_WINDOWS: List[int] = [1, 5, 10, 30, 90, 180]
 
 
+def _nan_auc_mean(Yc, Pc):
+    """Mean per column AUC that skips NaN labels left by an extreme split."""
+    aucs = []
+    for b in range(Yc.shape[1]):
+        m = ~_np.isnan(Yc[:, b])
+        if int(m.sum()) > 10 and _np.unique(Yc[m, b]).size > 1:
+            aucs.append(roc_auc(Yc[m, b], Pc[m, b]))
+    return float(_np.mean(aucs)) if aucs else 0.0
+
+
 def _softplus(z):
     return np.log1p(np.exp(-np.abs(z))) + np.maximum(z, 0.0)
 
@@ -287,7 +297,11 @@ class MultiScaleTermStructureNet:
         g = {}
         N = Y.shape[0]
         P = c["P"]
-        dlogits = (P - Y) / N
+        # Masked cross entropy. Under an extreme label split some horizons carry
+        # NaN for the dropped middle, so those targets are set equal to P to give
+        # them exactly zero gradient while the labeled horizons still train.
+        Yf = np.where(np.isnan(Y), P, Y)
+        dlogits = (P - Yf) / N
         if self.smooth_lambda > 0:
             dlogits = dlogits + self.smooth_lambda * self._curvature_grad(P) * P * (1 - P)
 
@@ -461,18 +475,21 @@ class MultiScaleTermStructureNet:
                 yr = Yret_d[tr][b] if Yret_d is not None else None
                 g = self._backward(c, Y[tr][b], yr)
                 self._update(g, cur_lr)
-                Pb = c["P"]; eps = 1e-12
-                ep_bce += float(to_cpu(-(Y[tr][b]*np.log(Pb+eps)
-                                         + (1-Y[tr][b])*np.log(1-Pb+eps)).mean()))
-                Pbc = to_cpu(Pb); Ybc = to_cpu(Y[tr][b])
-                ep_acc += float(((Pbc >= 0.5) == (Ybc >= 0.5)).mean())
-                n_b += 1
+                Pbc = to_cpu(c["P"]); Ybc = to_cpu(Y[tr][b]); eps = 1e-12
+                mb = ~_np.isnan(Ybc)
+                if mb.any():
+                    bce_el = -(Ybc*_np.log(Pbc+eps)
+                               + (1-Ybc)*_np.log(1-Pbc+eps))
+                    ep_bce += float(bce_el[mb].mean())
+                    ep_acc += float(((Pbc[mb] >= 0.5) == (Ybc[mb] >= 0.5)).mean())
+                    n_b += 1
             cval = self._forward(seq_va, ctx_va, training=False)
             P = cval["P"]; eps = 1e-12
-            bce = float(to_cpu(-(Y[va]*np.log(P+eps)
-                                 + (1-Y[va])*np.log(1-P+eps)).mean()))
             Pc = to_cpu(P); Yc = Yc_va
-            val_acc = float(((Pc >= 0.5) == (Yc >= 0.5)).mean())
+            mv = ~_np.isnan(Yc)
+            bce_el = -(Yc*_np.log(Pc+eps) + (1-Yc)*_np.log(1-Pc+eps))
+            bce = float(bce_el[mv].mean())
+            val_acc = float(((Pc[mv] >= 0.5) == (Yc[mv] >= 0.5)).mean())
             tr_bce = ep_bce / max(n_b, 1)
             tr_acc = ep_acc / max(n_b, 1)
             if bce < best - 1e-6:
@@ -490,11 +507,9 @@ class MultiScaleTermStructureNet:
                     plateau = 0
             if self.verbose and (epoch + 1) % self.verbose == 0:
                 marker = " *" if bad == 0 else ""
-                val_auc = float(_np.mean([roc_auc(Yc[:, b], Pc[:, b])
-                                          for b in range(self.B)]))
+                val_auc = _nan_auc_mean(Yc, Pc)
                 Ptre = to_cpu(self._forward(seq_tre, ctx_tre, training=False)["P"])
-                tr_auc = float(_np.mean([roc_auc(Yc_tre[:, b], Ptre[:, b])
-                                         for b in range(self.B)]))
+                tr_auc = _nan_auc_mean(Yc_tre, Ptre)
                 print(f"  Epoch {epoch+1:4d}/{self.epochs}  "
                       f"CE={tr_bce:.5f}  acc={tr_acc:.4f}  AUC={tr_auc:.4f}  "
                       f"val_CE={bce:.5f}  val_acc={val_acc:.4f}  "
