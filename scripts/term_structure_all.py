@@ -66,6 +66,8 @@ def parse_args():
     p.add_argument("--warm-start-force", action="store_true")
     p.add_argument("--stack-intraday", action="store_true",
                    help="Append intraday realized volatility as a daily feature.")
+    p.add_argument("--intraday-context", action="store_true",
+                   help="Fold the intraday scale into the daily context branch.")
     p.add_argument("--warm-restarts", action="store_true",
                    help="Use cosine warm restarts with Adam moment reset.")
     p.add_argument("--restart-period", type=int, default=120)
@@ -107,6 +109,8 @@ def _run_parallel(a):
         daily_cmd += ["--warm-start-force"]
     if a.stack_intraday:
         daily_cmd += ["--stack-intraday"]
+    if a.intraday_context:
+        daily_cmd += ["--intraday-context"]
     env_gpu = dict(os.environ); env_gpu["UCN_GPU"] = "1"
     env_cpu = dict(os.environ); env_cpu.pop("UCN_GPU", None)
     daily_env = env_gpu if a.daily_device == "gpu" else env_cpu
@@ -143,6 +147,7 @@ def main():
             min_dollar_vol=a.min_dollar_vol, cv_frac=a.cv_frac,
             warm_start=a.warm_start, warm_start_force=a.warm_start_force,
             stack_intraday=a.stack_intraday,
+            intraday_context=a.intraday_context,
             warm_restarts=a.warm_restarts, restart_period=a.restart_period,
             additivity_lambda=a.additivity_lambda,
             label_pct=a.label_pct,

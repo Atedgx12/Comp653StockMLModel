@@ -104,6 +104,11 @@ def parse_args():
                    help="Override the leakage guard and warm start anyway.")
     p.add_argument("--stack-intraday", action="store_true",
                    help="Append intraday realized volatility as a daily feature.")
+    p.add_argument("--intraday-context", action="store_true",
+                   help="Fold intraday realized volatility, a past-only EWMA "
+                        "forecast of it, and an availability flag into the daily "
+                        "context branch so the finer scale informs the longer "
+                        "horizons.")
     p.add_argument("--stack-interval", default="5m")
     p.add_argument("--stack-period", default="60d")
     p.add_argument("--stack-min-train-cov", type=float, default=0.02,
@@ -215,6 +220,37 @@ def build_intraday_stack(tickers, index, ticker_col, interval, period):
     vals = merged["iv"].values.astype(np.float32)
     cover = float(np.mean(~np.isnan(vals)))
     return vals, cover
+
+
+def build_intraday_context(tickers, index, ticker_col, interval, period):
+    """Intraday scale signal aligned to the daily grid for the daily context
+    branch. Returns three columns: the realized intraday volatility as of the
+    day, a past only EWMA forecast of it as a HAR style next day prediction, and
+    an availability flag so the model can tell real intraday signal from the
+    fill used on the rows the short intraday history does not cover. Uncovered
+    rows are imputed with the covered mean so the context standardizer stays
+    stable. Realized and EWMA values both use information up to the day only, so
+    feeding them forward into a daily forecast does not leak.
+    """
+    vals, cover = build_intraday_stack(tickers, index, ticker_col,
+                                       interval, period)
+    if vals is None:
+        return None, [], 0.0
+    avail = (~np.isnan(vals)).astype(np.float32)
+    df = pd.DataFrame({"date": pd.to_datetime(index), "ticker": ticker_col,
+                       "iv": vals, "_o": np.arange(len(vals))})
+    df = df.sort_values(["ticker", "date"])
+    df["ewma"] = (df.groupby("ticker")["iv"]
+                    .transform(lambda s: s.shift(1).ewm(span=5, min_periods=1)
+                               .mean()))
+    df = df.sort_values("_o")
+    iv = vals.astype(np.float32).copy()
+    ewma = df["ewma"].values.astype(np.float32)
+    for a in (iv, ewma):
+        mu = float(np.nanmean(a)) if np.isfinite(np.nanmean(a)) else 0.0
+        a[np.isnan(a)] = mu
+    cols = np.column_stack([iv, ewma, avail]).astype(np.float32)
+    return cols, ["intraday_rv", "intraday_rv_ewma5", "intraday_avail"], cover
 
 
 
@@ -402,6 +438,28 @@ def run(args):
             close, vol, index, ticker_col,
             ref_label=Y[:, min(4, Y.shape[1] - 1)],
             top_k=getattr(args, "context_top_k", 25))
+        # Fold the finer intraday scale into the daily context so the short
+        # horizon signal informs the longer horizon predictions. Appended after
+        # the MI selection so the intraday columns are always kept, then gated
+        # inside the model like the rest of the context.
+        if getattr(args, "intraday_context", False):
+            print("[IntradayContext] Building intraday signal for the daily "
+                  "context branch ...", flush=True)
+            ic_cols, ic_names, ic_cov = build_intraday_context(
+                close.columns, index, ticker_col,
+                getattr(args, "stack_interval", "5m"),
+                getattr(args, "stack_period", "60d"))
+            thr = getattr(args, "stack_min_train_cov", 0.02)
+            if ic_cols is not None and ic_cov >= thr:
+                ctx_full = np.hstack([ctx_full, ic_cols])
+                ctx_names = list(ctx_names) + ic_names
+                print(f"  appended {ic_names} intraday grid coverage="
+                      f"{ic_cov:.4f}", flush=True)
+            else:
+                got = 0.0 if ic_cols is None else ic_cov
+                print(f"[IntradayContext] SKIPPED: coverage {got:.4f} below "
+                      f"{thr:.4f}. The intraday history is too short to inform "
+                      "the daily grid.", flush=True)
         ctx_kept = ctx_full[keep]
         print(f"  context features ({len(ctx_names)}): {ctx_names[:12]} ...",
               flush=True)
