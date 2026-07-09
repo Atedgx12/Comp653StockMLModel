@@ -44,6 +44,8 @@ def parse_args():
     p.add_argument("--period", default="60d")
     p.add_argument("--n-tickers", type=int, default=60)
     p.add_argument("--smooth-lambda", type=float, default=0.3)
+    p.add_argument("--batch-size", type=int, default=4096,
+                   help="Training minibatch size passed to both scales.")
     p.add_argument("--additivity-lambda", type=float, default=0.0,
                    help="Variance additivity coupling weight, passed to both "
                         "scales. 0 disables it.")
@@ -89,12 +91,14 @@ def _run_parallel(a):
                  "--smooth-lambda", str(a.smooth_lambda), "--epochs", str(a.epochs),
                  "--additivity-lambda", str(a.additivity_lambda),
                  "--label-pct", str(a.label_pct),
+                 "--batch-size", str(a.batch_size),
                  "--cv-frac", str(a.cv_frac), "--emit-json", intra_json]
     daily_cmd = [py, "-u", os.path.join(ROOT, "multiscale_run.py"),
                  "--start", a.start, "--stride", str(a.stride),
                  "--smooth-lambda", str(a.smooth_lambda), "--epochs", str(a.epochs),
                  "--additivity-lambda", str(a.additivity_lambda),
                  "--label-pct", str(a.label_pct),
+                 "--batch-size", str(a.batch_size),
                  "--min-dollar-vol", str(a.min_dollar_vol),
                  "--cv-frac", str(a.cv_frac), "--emit-json", daily_json]
     if a.warm_start:
@@ -131,6 +135,7 @@ def main():
             warm_restarts=a.warm_restarts, restart_period=a.restart_period,
             additivity_lambda=a.additivity_lambda,
             label_pct=a.label_pct,
+            batch_size=a.batch_size,
             context_top_k=a.context_top_k)
         daily_args = SimpleNamespace(
             start=a.start, stride=a.stride, ref_horizon=30,
@@ -141,6 +146,7 @@ def main():
             warm_restarts=a.warm_restarts, restart_period=a.restart_period,
             additivity_lambda=a.additivity_lambda,
             label_pct=a.label_pct,
+            batch_size=a.batch_size,
             context_top_k=a.context_top_k)
 
         print("\n########## INTRADAY SCALE ##########", flush=True)

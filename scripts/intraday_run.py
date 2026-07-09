@@ -77,6 +77,8 @@ def parse_args():
     p.add_argument("--stride-min", type=int, default=5,
                    help="Sample every this many minutes to reduce overlap.")
     p.add_argument("--smooth-lambda", type=float, default=0.3)
+    p.add_argument("--batch-size", type=int, default=4096,
+                   help="Training minibatch size. Larger fills the GPU better.")
     p.add_argument("--additivity-lambda", type=float, default=0.0,
                    help="Variance additivity coupling weight on the band term "
                         "structure. 0 disables it.")
@@ -339,6 +341,7 @@ def run(args):
                                      smooth_lambda=args.smooth_lambda,
                                      additivity_lambda=getattr(args, "additivity_lambda", 0.0),
                                      epochs=args.epochs, patience=150, verbose=20,
+                                     batch_size=getattr(args, "batch_size", 4096),
                                      warm_restarts=getattr(args, "warm_restarts", False),
                                      restart_period=getattr(args, "restart_period", 120))
     net.fit(seq_tr, Ytr, Rtr, ctx=ctx_tr)
