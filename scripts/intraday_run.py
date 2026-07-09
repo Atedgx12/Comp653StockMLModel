@@ -92,6 +92,11 @@ def parse_args():
                    help="Disable the decision layer and per-ticker ledger.")
     p.add_argument("--context-top-k", type=int, default=25,
                    help="Keep the top-K context features by MI with volatility.")
+    p.add_argument("--label-pct", type=float, default=0.5,
+                   help="Below 0.5 builds an extreme split: top and bottom "
+                        "label-pct fraction become the two classes and the "
+                        "middle is dropped, which raises full coverage accuracy. "
+                        "0.5 keeps the median split over every sample.")
     p.add_argument("--emit-json", default=None,
                    help="Write the per-horizon results to this JSON path.")
     return p.parse_args()
@@ -211,9 +216,19 @@ def run(args):
         labels_rows.append(pd.DataFrame(d))
 
     allf = pd.concat(labels_rows, ignore_index=True)
+    # An extreme split with label_pct below 0.5 labels only the top and bottom
+    # tails and drops the ambiguous middle, which raises full coverage accuracy.
+    # 0.5 keeps the median split over every sample.
+    _lpct = getattr(args, "label_pct", 0.5)
     for h in WINDOWS_MIN:
         rank = allf.groupby("time")[f"h{h}"].rank(pct=True)
-        allf[f"y{h}"] = (rank >= 0.5).astype(float)
+        if _lpct < 0.5:
+            y = np.full(len(rank), np.nan)
+            y[rank.values >= 1.0 - _lpct] = 1.0
+            y[rank.values <= _lpct] = 0.0
+            allf[f"y{h}"] = y
+        else:
+            allf[f"y{h}"] = (rank >= 0.5).astype(float)
         allf.loc[allf[f"h{h}"].isna(), f"y{h}"] = np.nan
     mean_vol = [float(allf[f"h{h}"].mean()) for h in WINDOWS_MIN]
     ascii_bars([f"{w}m" for w in WINDOWS_MIN], mean_vol,

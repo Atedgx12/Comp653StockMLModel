@@ -114,6 +114,11 @@ def parse_args():
                    help="Disable the decision layer and per-ticker ledger.")
     p.add_argument("--context-top-k", type=int, default=25,
                    help="Keep the top-K context features by MI with volatility.")
+    p.add_argument("--label-pct", type=float, default=0.5,
+                   help="Below 0.5 builds an extreme split: top and bottom "
+                        "label-pct fraction become the two classes and the "
+                        "middle is dropped, which raises full coverage accuracy. "
+                        "0.5 keeps the median split over every name.")
     p.add_argument("--emit-json", default=None,
                    help="Write the per-horizon results to this JSON path.")
     return p.parse_args()
@@ -296,7 +301,7 @@ def build_multiscale_sequences(close, vol, index, ticker_col, windows):
     return seqs, valid
 
 
-def build_labels(close, index, ticker_col, horizons):
+def build_labels(close, index, ticker_col, horizons, label_pct=0.5):
     rows = []
     for ticker in close.columns:
         c = close[ticker].dropna()
@@ -313,9 +318,20 @@ def build_labels(close, index, ticker_col, horizons):
             d[f"r{h}"] = np.log(c.shift(-h) / c).values
         rows.append(pd.DataFrame(d))
     allf = pd.concat(rows, ignore_index=True)
+    # A median split labels every name and caps plain accuracy near the boundary
+    # because half the cross section sits next to the fiftieth percentile. An
+    # extreme split with label_pct below 0.5 labels only the top and bottom
+    # tails and drops the ambiguous middle, so the two classes separate and the
+    # full coverage accuracy rises toward the confident slice.
     for h in horizons:
         rank = allf.groupby("date")[f"h{h}"].rank(pct=True)
-        allf[f"y{h}"] = (rank >= 0.5).astype(float)
+        if label_pct < 0.5:
+            y = np.full(len(rank), np.nan)
+            y[rank.values >= 1.0 - label_pct] = 1.0
+            y[rank.values <= label_pct] = 0.0
+            allf[f"y{h}"] = y
+        else:
+            allf[f"y{h}"] = (rank >= 0.5).astype(float)
         allf.loc[allf[f"h{h}"].isna(), f"y{h}"] = np.nan
     ycols = [f"y{h}" for h in horizons]
     rcols = [f"r{h}" for h in horizons]
@@ -359,7 +375,8 @@ def run(args):
 
     print("[Labels] Forward volatility at horizons "
           f"{windows} ...", flush=True)
-    Y, mean_vol, Yret = build_labels(close, index, ticker_col, windows)
+    Y, mean_vol, Yret = build_labels(close, index, ticker_col, windows,
+                                     label_pct=getattr(args, "label_pct", 0.5))
 
     # Show the actual volatility term structure shape of the data.
     ascii_bars([f"{w}d" for w in windows], mean_vol,
