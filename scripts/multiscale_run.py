@@ -214,7 +214,16 @@ def build_intraday_stack(tickers, index, ticker_col, interval, period):
     if not rows:
         return None, 0.0
     long = pd.concat(rows, ignore_index=True)
+    # Intraday bars carry a tz aware index while the daily grid is tz naive, so
+    # normalize the merge key to tz naive to keep the join well typed.
+    long["date"] = pd.to_datetime(long["date"])
+    if getattr(long["date"].dt, "tz", None) is not None:
+        long["date"] = long["date"].dt.tz_localize(None)
+    long["date"] = long["date"].dt.normalize()
     key = pd.DataFrame({"date": pd.to_datetime(index), "ticker": ticker_col})
+    if getattr(key["date"].dt, "tz", None) is not None:
+        key["date"] = key["date"].dt.tz_localize(None)
+    key["date"] = key["date"].dt.normalize()
     key["_o"] = np.arange(len(key))
     merged = key.merge(long, on=["date", "ticker"], how="left").sort_values("_o")
     vals = merged["iv"].values.astype(np.float32)
