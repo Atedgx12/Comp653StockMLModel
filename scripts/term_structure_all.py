@@ -44,6 +44,9 @@ def parse_args():
     p.add_argument("--period", default="60d")
     p.add_argument("--n-tickers", type=int, default=60)
     p.add_argument("--smooth-lambda", type=float, default=0.3)
+    p.add_argument("--additivity-lambda", type=float, default=0.0,
+                   help="Variance additivity coupling weight, passed to both "
+                        "scales. 0 disables it.")
     p.add_argument("--epochs", type=int, default=800)
     p.add_argument("--min-dollar-vol", type=float, default=50_000_000.0)
     p.add_argument("--cv-frac", type=float, default=0.80)
@@ -81,10 +84,12 @@ def _run_parallel(a):
                  "--n-tickers", str(a.n_tickers), "--stride-min", str(a.stride_min),
                  "--interval", a.interval, "--period", a.period,
                  "--smooth-lambda", str(a.smooth_lambda), "--epochs", str(a.epochs),
+                 "--additivity-lambda", str(a.additivity_lambda),
                  "--cv-frac", str(a.cv_frac), "--emit-json", intra_json]
     daily_cmd = [py, "-u", os.path.join(ROOT, "multiscale_run.py"),
                  "--start", a.start, "--stride", str(a.stride),
                  "--smooth-lambda", str(a.smooth_lambda), "--epochs", str(a.epochs),
+                 "--additivity-lambda", str(a.additivity_lambda),
                  "--min-dollar-vol", str(a.min_dollar_vol),
                  "--cv-frac", str(a.cv_frac), "--emit-json", daily_json]
     if a.warm_start:
@@ -119,6 +124,7 @@ def main():
             interval=a.interval, period=a.period,
             smooth_lambda=a.smooth_lambda, epochs=a.epochs, cv_frac=a.cv_frac,
             warm_restarts=a.warm_restarts, restart_period=a.restart_period,
+            additivity_lambda=a.additivity_lambda,
             context_top_k=a.context_top_k)
         daily_args = SimpleNamespace(
             start=a.start, stride=a.stride, ref_horizon=30,
@@ -127,6 +133,7 @@ def main():
             warm_start=a.warm_start, warm_start_force=a.warm_start_force,
             stack_intraday=a.stack_intraday,
             warm_restarts=a.warm_restarts, restart_period=a.restart_period,
+            additivity_lambda=a.additivity_lambda,
             context_top_k=a.context_top_k)
 
         print("\n########## INTRADAY SCALE ##########", flush=True)

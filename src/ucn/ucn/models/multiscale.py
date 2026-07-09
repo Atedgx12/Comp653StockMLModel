@@ -100,6 +100,7 @@ class MultiScaleTermStructureNet:
     def __init__(self, windows: Optional[List[int]] = None, hidden=24,
                  trunk_sizes=(128, 64), lr=1e-3, beta1=0.9, beta2=0.999,
                  lam=1e-3, dropout_rate=0.3, smooth_lambda=0.3,
+                 additivity_lambda=0.0,
                  epochs=200, batch_size=1024, patience=25, seed=42, verbose=20,
                  quantiles=None, quantile_weight=1.0, alpha=0.10,
                  lr_decay=0.5, lr_patience=40, min_lr=1e-5, standardize=True,
@@ -112,6 +113,13 @@ class MultiScaleTermStructureNet:
         self.lr = lr; self.beta1 = beta1; self.beta2 = beta2; self.lam = lam
         self.dropout_rate = dropout_rate
         self.smooth_lambda = smooth_lambda
+        # Variance additivity coupling. The squared 90 percent band width is an
+        # integrated variance proxy, and dividing it by the horizon length gives
+        # a variance rate that additivity holds roughly constant across the term
+        # structure. Penalizing the curvature of that rate lets the reliable
+        # long horizon band regularize the noisy short horizon ones.
+        self.additivity_lambda = additivity_lambda
+        self._Ht = None
         self.epochs = epochs; self.batch_size = batch_size
         self.patience = patience; self.seed = seed; self.verbose = verbose
         # Reduce-on-plateau schedule: when validation loss stops improving for
@@ -241,6 +249,40 @@ class MultiScaleTermStructureNet:
         gP[:, :-2]  += scale * d2
         return gP
 
+    def _additivity_grad(self, q, raw):
+        # Integrated variance additivity in scale free form. The band width
+        # w = q_high - q_low is a forward return spread, and under variance
+        # additivity for a random walk it grows as w proportional to sqrt(H), so
+        # 2*log(w) tracks log(H) up to a constant and the curvature of log(w)
+        # along the horizon axis must match half the curvature of log(H). The
+        # loss is the squared residual of that match, which lets the reliable
+        # long horizon band regularize the noisy short horizon ones. Working in
+        # log space keeps the gradient well conditioned regardless of the return
+        # units, and the width depends only on the positive increments so the
+        # gradient flows through softplus into the increment logits.
+        N, B, Q = q.shape
+        if B < 3 or self.additivity_lambda <= 0:
+            return np.zeros_like(raw)
+        eps = 1e-6
+        w = q[:, :, -1] - q[:, :, 0]
+        Lw = np.log(w + eps)
+        C = Lw[:, 2:] - 2.0 * Lw[:, 1:-1] + Lw[:, :-2]
+        if self._Ht is None:
+            H = _np.asarray(self.windows, dtype=self.dtype)
+            lH = _np.log(H)
+            t = lH[2:] - 2.0 * lH[1:-1] + lH[:-2]
+            self._Ht = to_device(t.reshape(1, -1))
+        res = 2.0 * C - self._Ht
+        dC = (4.0 * self.additivity_lambda / (N * max(B - 2, 1))) * res
+        gL = np.zeros_like(Lw)
+        gL[:, 2:]   += dC
+        gL[:, 1:-1] += -2.0 * dC
+        gL[:, :-2]  += dC
+        dLdw = gL / (w + eps)
+        draw = np.zeros_like(raw)
+        draw[:, :, 1:] = dLdw[:, :, None] * _sigmoid(raw[:, :, 1:])
+        return draw
+
     def _backward(self, c, Y, Yret=None):
         g = {}
         N = Y.shape[0]
@@ -257,21 +299,26 @@ class MultiScaleTermStructureNet:
         # Quantile head gradient via the pinball loss. Yret is the forward
         # return per horizon.  The gradient flows through the non crossing
         # construction back into the shared trunk, so the price bands train the
-        # same representation as the volatility heads.
-        if Yret is not None:
+        # same representation as the volatility heads. The additivity coupling
+        # adds into the same increment logits when enabled.
+        need_q = (Yret is not None) or (self.additivity_lambda > 0)
+        if need_q:
             q = c["q"]; raw = c["raw"]
             Q, B = self.Q, self.B
-            if self._taus is None:
-                self._taus = to_device(_np.asarray(self.quantiles,
-                                       dtype=self.dtype).reshape(1, 1, Q))
-            e = Yret[:, :, None] - q                    # (N, B, Q)
-            dq = np.where(e > 0, -self._taus, 1.0 - self._taus)
-            dq = dq * (self.quantile_weight / (N * B * Q))
             draw = np.zeros_like(raw)
-            draw[:, :, 0] = dq.sum(axis=2)
-            # d(loss)/d(inc_k) is the reverse cumulative sum of the upper dq.
-            d_inc = np.cumsum(dq[:, :, 1:][:, :, ::-1], axis=2)[:, :, ::-1]
-            draw[:, :, 1:] = d_inc * _sigmoid(raw[:, :, 1:])
+            if Yret is not None:
+                if self._taus is None:
+                    self._taus = to_device(_np.asarray(self.quantiles,
+                                           dtype=self.dtype).reshape(1, 1, Q))
+                e = Yret[:, :, None] - q                    # (N, B, Q)
+                dq = np.where(e > 0, -self._taus, 1.0 - self._taus)
+                dq = dq * (self.quantile_weight / (N * B * Q))
+                draw[:, :, 0] = dq.sum(axis=2)
+                # d(loss)/d(inc_k) is the reverse cumulative sum of the upper dq.
+                d_inc = np.cumsum(dq[:, :, 1:][:, :, ::-1], axis=2)[:, :, ::-1]
+                draw[:, :, 1:] += d_inc * _sigmoid(raw[:, :, 1:])
+            if self.additivity_lambda > 0:
+                draw += self._additivity_grad(q, raw)
             draw_flat = draw.reshape(N, B * Q)
             g["W_q"] = A.T @ draw_flat
             g["b_q"] = draw_flat.sum(0)

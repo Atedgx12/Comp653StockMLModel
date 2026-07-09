@@ -47,7 +47,7 @@ def selective_accuracy(P, Y, labels, unit):
     data dropped.
     """
     import numpy as _np
-    covs = [1.0, 0.5, 0.3, 0.1, 0.05]
+    covs = [1.0, 0.5, 0.3, 0.2, 0.1, 0.05]
     print("\n[Selective] Accuracy at confidence coverage "
           "(keep-all model + confident slice):")
     print("  horizon " + "".join(f"  cov{int(c*100):>3}%" for c in covs))
@@ -85,6 +85,9 @@ def parse_args():
     p.add_argument("--start", default="2010-01-01")
     p.add_argument("--stride", type=int, default=9)
     p.add_argument("--smooth-lambda", type=float, default=0.3)
+    p.add_argument("--additivity-lambda", type=float, default=0.0,
+                   help="Variance additivity coupling weight on the band term "
+                        "structure. 0 disables it.")
     p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--min-dollar-vol", type=float, default=50_000_000.0)
     p.add_argument("--cv-frac", type=float, default=0.80)
@@ -455,6 +458,7 @@ def run(args):
     net = MultiScaleTermStructureNet(windows=windows, hidden=24,
                                      trunk_sizes=(128, 64),
                                      smooth_lambda=args.smooth_lambda,
+                                     additivity_lambda=getattr(args, "additivity_lambda", 0.0),
                                      epochs=args.epochs, patience=150, verbose=20,
                                      warm_restarts=getattr(args, "warm_restarts", False),
                                      restart_period=getattr(args, "restart_period", 120))

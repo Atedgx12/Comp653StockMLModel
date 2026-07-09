@@ -77,6 +77,9 @@ def parse_args():
     p.add_argument("--stride-min", type=int, default=5,
                    help="Sample every this many minutes to reduce overlap.")
     p.add_argument("--smooth-lambda", type=float, default=0.3)
+    p.add_argument("--additivity-lambda", type=float, default=0.0,
+                   help="Variance additivity coupling weight on the band term "
+                        "structure. 0 disables it.")
     p.add_argument("--epochs", type=int, default=1500)
     p.add_argument("--cv-frac", type=float, default=0.80)
     p.add_argument("--warm-restarts", action="store_true",
@@ -319,6 +322,7 @@ def run(args):
     net = MultiScaleTermStructureNet(windows=WINDOWS_MIN, hidden=24,
                                      trunk_sizes=(128, 64),
                                      smooth_lambda=args.smooth_lambda,
+                                     additivity_lambda=getattr(args, "additivity_lambda", 0.0),
                                      epochs=args.epochs, patience=150, verbose=20,
                                      warm_restarts=getattr(args, "warm_restarts", False),
                                      restart_period=getattr(args, "restart_period", 120))
