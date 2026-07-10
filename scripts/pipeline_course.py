@@ -840,6 +840,77 @@ def roc_auc(y_true, y_score):
     rank_sum = ranks[y_true[order] == 1].sum()
     return (rank_sum - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg)
 
+
+def majority_class_baseline(y_true):
+    """Always-predict-majority reference: accuracy = majority-class rate, AUC = 0.5."""
+    p_up = float(np.mean(y_true))
+    return max(p_up, 1.0 - p_up), 0.5
+
+
+def paired_bootstrap_auc_diff(y_true, prob_a, prob_b, n_boot=1000, seed=SEED):
+    """Paired bootstrap on the A-B AUC gap; returns gap, 95% CI, and p-value for H0: gap=0."""
+    rng_b = np.random.default_rng(seed)
+    n     = len(y_true)
+    obs   = roc_auc(y_true, prob_a) - roc_auc(y_true, prob_b)
+    diffs = np.empty(n_boot)
+    for b in range(n_boot):
+        idx = rng_b.integers(0, n, n)
+        yt  = y_true[idx]
+        if yt.min() == yt.max():
+            diffs[b] = 0.0
+            continue
+        diffs[b] = roc_auc(yt, prob_a[idx]) - roc_auc(yt, prob_b[idx])
+    lo, hi = np.percentile(diffs, [2.5, 97.5])
+    p_val  = 2.0 * min(float(np.mean(diffs <= 0)), float(np.mean(diffs >= 0)))
+    return obs, float(lo), float(hi), min(p_val, 1.0)
+
+
+def make_eda_figures(X, y, feat_names, out_dir=OUT_DIR):
+    """Correlation heatmap, PCA scree, and class-balance figures (report Section 4.2)."""
+    Xs = (X - X.mean(0)) / (X.std(0) + 1e-9)
+
+    corr = np.corrcoef(Xs, rowvar=False)
+    fig, ax = plt.subplots(figsize=(10, 9))
+    im = ax.imshow(corr, cmap="coolwarm", vmin=-1, vmax=1)
+    ax.set_xticks(range(len(feat_names)))
+    ax.set_xticklabels(feat_names, rotation=90, fontsize=7)
+    ax.set_yticks(range(len(feat_names)))
+    ax.set_yticklabels(feat_names, fontsize=7)
+    ax.set_title("Feature Correlation Matrix")
+    fig.colorbar(im, ax=ax, shrink=0.8)
+    plt.tight_layout()
+    fig.savefig(os.path.join(out_dir, "eda_correlation.png"), dpi=150)
+    plt.close(fig)
+
+    eigvals = np.clip(np.linalg.eigvalsh(np.cov(Xs, rowvar=False))[::-1], 0, None)
+    evr     = eigvals / eigvals.sum()
+    comps   = np.arange(1, len(evr) + 1)
+    fig, ax = plt.subplots(figsize=(9, 4))
+    ax.bar(comps, evr, color="steelblue", label="Individual")
+    ax.plot(comps, np.cumsum(evr), "r-o", markersize=3, label="Cumulative")
+    ax.set_xlabel("Principal component")
+    ax.set_ylabel("Explained variance ratio")
+    ax.set_title("PCA Scree — Feature Variance Structure")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    fig.savefig(os.path.join(out_dir, "eda_pca_variance.png"), dpi=150)
+    plt.close(fig)
+
+    n_up, n_down = int((y == 1).sum()), int((y == 0).sum())
+    fig, ax = plt.subplots(figsize=(5, 4))
+    ax.bar(["Down", "Up"], [n_down, n_up], color=["indianred", "seagreen"])
+    ax.set_ylabel("Samples")
+    ax.set_title(f"Class Balance (Up = {n_up / (n_up + n_down):.3f})")
+    for i, v in enumerate([n_down, n_up]):
+        ax.text(i, v, f"{v:,}", ha="center", va="bottom", fontsize=9)
+    plt.tight_layout()
+    fig.savefig(os.path.join(out_dir, "eda_class_balance.png"), dpi=150)
+    plt.close(fig)
+
+    print(f"    Saved eda_correlation.png, eda_pca_variance.png, eda_class_balance.png "
+          f"(Up={n_up:,}  Down={n_down:,})", flush=True)
+
 # ===========================================================================
 # Data: S&P 500 download and feature engineering
 # ===========================================================================
@@ -1410,7 +1481,7 @@ def retrain_and_plot(X_np, y_np, dates, feat_names, model, model_name,
                     f"loss_curve_{model_name.replace(' ','_')}.png"), dpi=150)
         print(f"  Saved loss curve.")
 
-    return acc, auc, mu, sd
+    return acc, auc, mu, sd, y_te, prob1
 
 
 # ===========================================================================
@@ -1451,7 +1522,7 @@ def lgbm_baseline(X_np, y_np, dates):
     auc  = roc_auc(y_te, prob)
     print(f"\n  [LightGBM-GPU]  acc={acc:.4f}  auc={auc:.4f}")
     booster.save_model(os.path.join(OUT_DIR, "lgbm_full.txt"))
-    return acc, auc
+    return acc, auc, y_te, prob
 
 # ===========================================================================
 # Main
@@ -1505,6 +1576,9 @@ if __name__ == "__main__":
         sent_label = ""
     print(f"\n    Using {len(selected)} MI-selected price features{sent_label}.")
 
+    print("\n[3b] EDA figures — correlation, PCA, class balance ...", flush=True)
+    make_eda_figures(X_sel, y_all, selected + (["sent_rank"] if has_sent else []))
+
     # --- Walk-forward CV on early 25% of dates (fast sanity check) ---------
     unique_dates = np.sort(np.unique(dates))
     cut     = unique_dates[int(0.25 * len(unique_dates))]
@@ -1540,7 +1614,7 @@ if __name__ == "__main__":
         patience=150, use_sent=has_sent,
         grad_clip=1.0, noise_frac=0.05, warmup_epochs=5,
         use_fgsm=True, fgsm_eps=0.01, pgd_steps=5)
-    final_acc, final_auc, mu_f, sd_f = retrain_and_plot(
+    final_acc, final_auc, mu_f, sd_f, y_te_u, prob_u = retrain_and_plot(
         X_sel, y_all, dates, selected, unified,
         "UnifiedCourseNetwork_Adam_Sent" if has_sent else "UnifiedCourseNetwork_Adam")
 
@@ -1551,11 +1625,37 @@ if __name__ == "__main__":
     # --- Summary table ------------------------------------------------------
     label = "UnifiedCourseNetwork (LR+NB+MLP+Sent)" if has_sent \
             else "UnifiedCourseNetwork (LR+NB+MLP)"
-    rows = {label: {"acc": final_acc, "auc": final_auc}}
+    maj_acc, maj_auc = majority_class_baseline(y_te_u)
+    rows = {
+        label: {"acc": final_acc, "auc": final_auc},
+        "MajorityClass (always-up)": {"acc": maj_acc, "auc": maj_auc},
+    }
     if lgbm_res:
         rows["LightGBM-GPU (baseline)"] = {"acc": lgbm_res[0], "auc": lgbm_res[1]}
     df_summary = pd.DataFrame(rows).T
     print("\n=== Final Model Comparison ===")
     print(df_summary.to_string())
     df_summary.to_csv(os.path.join(OUT_DIR, "final_results_unified.csv"))
+
+    # --- Statistical significance of the UCN vs LightGBM AUC gap ------------
+    print("\n[7] Significance test — paired bootstrap on the AUC gap ...",
+          flush=True)
+    print(f"    Test-set class balance: Up={float(np.mean(y_te_u)):.4f}  "
+          f"majority-class accuracy={maj_acc:.4f}", flush=True)
+    if lgbm_res:
+        obs, lo, hi, p_val = paired_bootstrap_auc_diff(y_te_u, prob_u, lgbm_res[3])
+        verdict = "significant (CI excludes 0)" if lo > 0 or hi < 0 \
+                  else "not significant (CI includes 0)"
+        print(f"    UCN - LightGBM AUC gap = {obs:+.4f}  "
+              f"95% CI [{lo:+.4f}, {hi:+.4f}]  p={p_val:.3f}  -> {verdict}",
+              flush=True)
+        pd.DataFrame([{
+            "auc_gap_ucn_minus_lgbm": obs, "ci_low": lo, "ci_high": hi,
+            "bootstrap_p_value": p_val, "majority_class_acc": maj_acc,
+            "test_up_frac": float(np.mean(y_te_u)),
+        }]).to_csv(os.path.join(OUT_DIR, "significance_test.csv"), index=False)
+        print("    Saved significance_test.csv")
+    else:
+        print("    LightGBM unavailable — skipping paired test.", flush=True)
+
     print("\nAll done. Artifacts saved to", OUT_DIR)
