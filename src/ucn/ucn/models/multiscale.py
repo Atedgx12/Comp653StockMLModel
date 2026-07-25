@@ -52,7 +52,9 @@ def _sigmoid(z):
 def _lstm_forward(seqs, W, U, b, H):
     """Run one LSTM branch over a sequence tensor and cache for BPTT.
 
-    seqs : (N, T, d).  Returns h_T (N, H) and a cache dict.
+    seqs : (N, T, d).  Returns h_T (N, H), H_all (N, T, H), and a cache dict.
+    H_all is all intermediate hidden states (not just the last one), cached for
+    the temporal self-attention backward pass.
     """
     N, T = seqs.shape[0], seqs.shape[1]
     h = np.zeros((N, T + 1, H), dtype=seqs.dtype)
@@ -67,18 +69,28 @@ def _lstm_forward(seqs, W, U, b, H):
         o = sigmoid(z[:, 3*H:])
         c[:, t+1, :] = f * c[:, t, :] + i * g
         h[:, t+1, :] = o * np.tanh(c[:, t+1, :])
+    H_all = h[:, 1:, :]   # (N, T, H) — all output hidden states
     cache = {"seqs": seqs, "h": h, "c": c, "gates": gates, "T": T, "H": H}
-    return h[:, T, :], cache
+    return h[:, T, :], H_all, cache
 
 
-def _lstm_backward(d_hT, cache, W, U):
-    """BPTT for one LSTM branch. Returns gradients for W, U, b."""
+def _lstm_backward(d_hT, cache, W, U, d_H_all=None):
+    """BPTT for one LSTM branch. Returns gradients for W, U, b.
+
+    d_hT    : (N, H) gradient at the last hidden state from the trunk / attention.
+    d_H_all : (N, T, H) optional per-step gradient from the temporal attention
+              module. Added into the BPTT accumulator at each timestep so the
+              attention loss flows all the way back through the recurrence.
+    """
     seqs = cache["seqs"]; h = cache["h"]; c = cache["c"]
     gates = cache["gates"]; T = cache["T"]; H = cache["H"]
     dW = np.zeros_like(W); dU = np.zeros_like(U); db = np.zeros(4 * H)
     d_h_next = d_hT.copy()
     d_c_next = np.zeros_like(d_hT)
     for t in reversed(range(T)):
+        # Inject per-step gradient from temporal attention if supplied.
+        if d_H_all is not None:
+            d_h_next = d_h_next + d_H_all[:, t, :]
         z = gates[:, t, :]
         f = sigmoid(z[:,      :H])
         i = sigmoid(z[:,     H:2*H])
@@ -116,6 +128,10 @@ class MultiScaleTermStructureNet:
                  lr_decay=0.5, lr_patience=40, min_lr=1e-5, standardize=True,
                  dtype="float32", warm_restarts=False, restart_period=120,
                  restart_mult=1.0):
+        # --- cross-branch attention dimension ---
+        # Each of the B branch embeddings (size H) is projected to d_attn-dim
+        # queries and keys for the cross-branch attention layer.
+        self.d_attn = max(hidden // 2, 8)
         self.windows = windows or DEFAULT_WINDOWS
         self.B = len(self.windows)
         self.H = hidden
@@ -195,6 +211,19 @@ class MultiScaleTermStructureNet:
         # it is neutral before training learns which feature groups matter.
         if d_ctx > 0:
             self.params["w_ctx"] = np.zeros(d_ctx)
+        # ------------------------------------------------------------------
+        # Temporal self-attention (no new params — uses h_T as the query)
+        # Cross-branch self-attention: Q, K, V projections over the B embeddings
+        # Q and K project H -> d_attn for the scaled dot product score.
+        # V projects H -> H so the output stays in the same embedding space.
+        # Identity init for W_V_cross makes the layer a residual pass-through
+        # at the start of training, which stabilises early-epoch gradients.
+        # ------------------------------------------------------------------
+        da = self.d_attn
+        sc_attn = math.sqrt(2.0 / H)
+        self.params["W_Q_cross"] = rng.standard_normal((H, da)).astype(self.dtype) * sc_attn
+        self.params["W_K_cross"] = rng.standard_normal((H, da)).astype(self.dtype) * sc_attn
+        self.params["W_V_cross"] = _np.eye(H, dtype=self.dtype)  # identity init
         for k in self.params:
             self.params[k] = self.params[k].astype(self.dtype)
         for k in self.params:
@@ -203,15 +232,41 @@ class MultiScaleTermStructureNet:
 
     def _forward(self, seq_list, ctx=None, training=True):
         c = {}
-        embs = []
-        caches = []
+        raw_embs = []    # raw LSTM final hidden states (before temporal attn)
+        H_alls   = []    # all-timestep hidden states per branch (for temporal attn)
+        caches   = []
         for bnc in range(self.B):
-            hT, cache = _lstm_forward(seq_list[bnc],
-                                      self.params[f"lstmW{bnc}"],
-                                      self.params[f"lstmU{bnc}"],
-                                      self.params[f"lstmb{bnc}"], self.H)
-            embs.append(hT)
+            hT, H_all, cache = _lstm_forward(seq_list[bnc],
+                                             self.params[f"lstmW{bnc}"],
+                                             self.params[f"lstmU{bnc}"],
+                                             self.params[f"lstmb{bnc}"], self.H)
+            raw_embs.append(hT)
+            H_alls.append(H_all)
             caches.append(cache)
+
+        # (A) Temporal self-attention: each branch re-weights its own sequence
+        # using h_T as the query, then the attended context is added to h_T.
+        embs = []
+        attn_weights = []
+        attended_vecs = []
+        for bnc in range(self.B):
+            attended, w = self._temporal_attn_forward(H_alls[bnc], raw_embs[bnc])
+            embs.append(raw_embs[bnc] + attended)  # residual skip
+            attn_weights.append(w)
+            attended_vecs.append(attended)
+
+        # (B) Cross-branch attention: each embedding attends to all other scales,
+        # letting the long-horizon branch inform the short-horizon one and vice versa.
+        embs_cross, attn_cache = self._cross_branch_attn_forward(embs)
+        c["embs_raw"]     = raw_embs
+        c["H_alls"]       = H_alls
+        c["attn_weights"] = attn_weights
+        c["attended_vecs"] = attended_vecs
+        c["embs_pre_cross"] = embs
+        c["attn_cache"]   = attn_cache
+
+        embs = embs_cross
+
         # Drift between adjacent scale embeddings.
         drifts = [embs[k+1] - embs[k] for k in range(self.B - 1)]
         parts = embs + drifts
@@ -222,7 +277,7 @@ class MultiScaleTermStructureNet:
             parts = parts + [ctx_g]
             c["ctx"] = ctx; c["gate"] = gate
         fuse = np.concatenate(parts, axis=1)
-        c["embs"] = embs; c["caches"] = caches; c["fuse"] = fuse
+        c["caches"] = caches; c["fuse"] = fuse
 
         A = fuse
         p = self.dropout_rate
@@ -248,6 +303,133 @@ class MultiScaleTermStructureNet:
         c["raw"] = raw
         c["q"] = q
         return c
+
+    def _temporal_attn_forward(self, H_all, h_T):
+        """Temporal self-attention: h_T acts as the query over all T hidden states.
+
+        scores_t = h_T . h_t / sqrt(H)  \u2014 no new parameters.
+        Produces a context vector that soft-selects the most relevant timestep
+        from the LSTM sequence.  The attended output is added back to h_T as a
+        residual so the layer can be ignored at initialisation (weights ~ 0
+        means attended ~ mean(H_all), which adds a small zero-mean offset).
+
+        Returns
+        -------
+        attended : (N, H)  weighted average of H_all under the attention weights.
+        weights  : (N, T)  the softmax attention distribution.
+        """
+        H = h_T.shape[1]
+        scale = 1.0 / _np.sqrt(H).astype(h_T.dtype)
+        # (N, T, H) x (N, H, 1) -> (N, T, 1) -> (N, T)
+        scores = (H_all * h_T[:, None, :]).sum(-1) * scale   # (N, T)
+        scores = scores - scores.max(-1, keepdims=True)       # numerical stability
+        exp_s  = np.exp(scores)
+        weights = exp_s / (exp_s.sum(-1, keepdims=True) + 1e-9)  # (N, T)
+        attended = (weights[:, :, None] * H_all).sum(1)           # (N, H)
+        return attended, weights
+
+    def _temporal_attn_backward(self, d_attended, H_all, h_T, weights):
+        """Backward pass through the temporal self-attention layer.
+
+        Returns
+        -------
+        d_H_all : (N, T, H)  gradient to inject into BPTT at each timestep.
+        d_hT    : (N, H)     additional gradient at h_T from its role as query.
+        """
+        H = h_T.shape[1]
+        scale = 1.0 / _np.sqrt(H).astype(h_T.dtype)
+
+        # -- gradient from attended = sum_t weights_t * H_all_t --
+        d_H_all  = d_attended[:, None, :] * weights[:, :, None]   # (N, T, H)
+        d_weights = (d_attended[:, None, :] * H_all).sum(-1)      # (N, T)
+
+        # -- softmax backward: d_scores = w * (d_w - sum(w * d_w)) --
+        d_scores = weights * (d_weights - (weights * d_weights).sum(-1, keepdims=True))
+
+        # -- gradient through scores = (H_all * h_T).sum(-1) * scale --
+        d_H_all += d_scores[:, :, None] * h_T[:, None, :] * scale  # (N, T, H)
+        d_hT     = (d_scores[:, :, None] * H_all * scale).sum(1)   # (N, H)
+        return d_H_all, d_hT
+
+    def _cross_branch_attn_forward(self, embs):
+        """Cross-branch self-attention over the B LSTM embeddings.
+
+        Projects each embedding to Q, K (dim d_attn) and V (dim H), computes
+        scaled dot-product attention across branches, and adds a residual
+        skip-connection.  The identity initialisation of W_V_cross ensures the
+        layer starts as a pass-through.
+
+        Parameters
+        ----------
+        embs : list of B arrays each (N, H)
+
+        Returns
+        -------
+        out_list : list of B arrays each (N, H)
+        attn_cache : dict with keys E, Q, K, V, A  (for backward)
+        """
+        E = np.stack(embs, axis=1)                         # (N, B, H)
+        Q = E @ self.params["W_Q_cross"]                   # (N, B, d_attn)
+        K = E @ self.params["W_K_cross"]                   # (N, B, d_attn)
+        V = E @ self.params["W_V_cross"]                   # (N, B, H)
+        da = self.d_attn
+        scale = 1.0 / _np.sqrt(da).astype(E.dtype)
+        # (N, B, d_attn) x (N, d_attn, B) -> (N, B, B)
+        scores = np.einsum("nid,njd->nij", Q, K) * scale
+        scores = scores - scores.max(-1, keepdims=True)
+        exp_s  = np.exp(scores)
+        A = exp_s / (exp_s.sum(-1, keepdims=True) + 1e-9)  # (N, B, B)
+        # (N, B, B) x (N, B, H) -> (N, B, H)
+        out = np.einsum("nij,njh->nih", A, V)
+        out = out + E                                       # residual skip
+        attn_cache = {"E": E, "Q": Q, "K": K, "V": V, "A": A}
+        out_list = [out[:, b, :] for b in range(self.B)]
+        return out_list, attn_cache
+
+    def _cross_branch_attn_backward(self, d_embs_list, attn_cache):
+        """Backward pass through the cross-branch attention layer.
+
+        d_embs_list : list of B arrays (N, H) \u2014 gradient into each attended emb.
+
+        Returns
+        -------
+        d_embs_in : list of B arrays (N, H)  gradient back to LSTM embeddings.
+        d_W_Q, d_W_K, d_W_V : gradients for the projection matrices.
+        """
+        E = attn_cache["E"]; Q = attn_cache["Q"]
+        K = attn_cache["K"]; V = attn_cache["V"]; A = attn_cache["A"]
+        da = self.d_attn
+        scale = 1.0 / _np.sqrt(da).astype(E.dtype)
+
+        d_out = np.stack(d_embs_list, axis=1)              # (N, B, H)
+
+        # Residual skip: gradient flows straight through E too.
+        d_E = d_out.copy()                                 # (N, B, H)
+
+        # out = A @ V  ->  d_V = A.T @ d_out,  d_A = d_out @ V.T
+        d_V = np.einsum("nij,nih->njh", A, d_out)         # (N, B, H)
+        d_A = np.einsum("nih,njh->nij", d_out, V)         # (N, B, B)
+
+        # Softmax backward.
+        d_scores = A * (d_A - (A * d_A).sum(-1, keepdims=True))  # (N, B, B)
+        d_scores = d_scores * scale
+
+        # scores = Q @ K.T  ->  d_Q = d_scores @ K,  d_K = d_scores.T @ Q
+        d_Q = np.einsum("nij,njd->nid", d_scores, K)      # (N, B, d_attn)
+        d_K = np.einsum("nij,nid->njd", d_scores, Q)      # (N, B, d_attn)
+
+        # Projection backward: d_E contributions from Q, K, V.
+        d_E += np.einsum("nid,hd->nih", d_Q, self.params["W_Q_cross"])
+        d_E += np.einsum("nid,hd->nih", d_K, self.params["W_K_cross"])
+        d_E += np.einsum("nih,hj->nij", d_V, self.params["W_V_cross"].T)
+
+        # Parameter gradients.
+        d_W_Q = np.einsum("nih,nid->hd", E, d_Q)          # (H, d_attn)
+        d_W_K = np.einsum("nih,nid->hd", E, d_K)          # (H, d_attn)
+        d_W_V = np.einsum("nih,nij->hj", E, d_V)          # (H, H)
+
+        d_embs_in = [d_E[:, b, :] for b in range(self.B)]
+        return d_embs_in, d_W_Q, d_W_K, d_W_V
 
     def _curvature_grad(self, P):
         d2 = P[:, 2:] - 2.0 * P[:, 1:-1] + P[:, :-2]
@@ -370,11 +552,31 @@ class MultiScaleTermStructureNet:
             d_embs[k+1] += d_drift
             d_embs[k]   -= d_drift
 
-        # BPTT each branch with its embedding gradient.
+        # (B) Cross-branch attention backward: distribute gradient back to the
+        # pre-cross-branch embeddings and accumulate parameter gradients.
+        d_embs_pre_cross, g["W_Q_cross"], g["W_K_cross"], g["W_V_cross"] = \
+            self._cross_branch_attn_backward(d_embs, c["attn_cache"])
+
+        # (A) Temporal self-attention backward: gradient at the post-attention
+        # embedding (= raw h_T + attended) splits equally into h_T and attended.
+        # The attended-path backward produces per-step LSTM gradients d_H_all
+        # which are injected into BPTT via the optional argument.
         for bnc in range(B):
-            dW, dU, db = _lstm_backward(d_embs[bnc], c["caches"][bnc],
-                                        self.params[f"lstmW{bnc}"],
-                                        self.params[f"lstmU{bnc}"])
+            d_emb_after = d_embs_pre_cross[bnc]   # gradient at (h_T + attended)
+            # Both h_T and attended receive the full upstream gradient (residual).
+            d_attended = d_emb_after
+            d_hT_direct = d_emb_after
+            # Temporal attention backward.
+            d_H_all, d_hT_from_query = self._temporal_attn_backward(
+                d_attended, c["H_alls"][bnc], c["embs_raw"][bnc],
+                c["attn_weights"][bnc])
+            d_hT_total = d_hT_direct + d_hT_from_query
+
+            dW, dU, db = _lstm_backward(
+                d_hT_total, c["caches"][bnc],
+                self.params[f"lstmW{bnc}"],
+                self.params[f"lstmU{bnc}"],
+                d_H_all=d_H_all)
             g[f"lstmW{bnc}"] = dW
             g[f"lstmU{bnc}"] = dU
             g[f"lstmb{bnc}"] = db
