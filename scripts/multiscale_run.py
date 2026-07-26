@@ -548,6 +548,7 @@ def run(args):
                                      smooth_lambda=args.smooth_lambda,
                                      additivity_lambda=getattr(args, "additivity_lambda", 0.0),
                                      epochs=args.epochs, patience=150, verbose=20,
+                                     lr_patience=200, min_lr=1e-6,
                                      batch_size=getattr(args, "batch_size", 4096),
                                      warm_restarts=getattr(args, "warm_restarts", False),
                                      restart_period=getattr(args, "restart_period", 120))

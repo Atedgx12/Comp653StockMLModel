@@ -223,7 +223,7 @@ class MultiScaleTermStructureNet:
         sc_attn = math.sqrt(2.0 / H)
         self.params["W_Q_cross"] = rng.standard_normal((H, da)).astype(self.dtype) * sc_attn
         self.params["W_K_cross"] = rng.standard_normal((H, da)).astype(self.dtype) * sc_attn
-        self.params["W_V_cross"] = _np.eye(H, dtype=self.dtype)  # identity init
+        self.params["W_V_cross"] = to_device(_np.eye(H, dtype=self.dtype))  # identity init
         for k in self.params:
             self.params[k] = self.params[k].astype(self.dtype)
         for k in self.params:
