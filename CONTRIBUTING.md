@@ -1,7 +1,6 @@
 # Contributing
 
-This is a COMP 653 group project by Zachary Powell and Josh Levy. The
-conventions below keep the codebase clean and contributions reviewable.
+This is a single author course project, but the conventions below keep the codebase clean if a collaborator joins later.
 
 ## Local setup
 

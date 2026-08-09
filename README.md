@@ -1,13 +1,10 @@
-# COMP 653 Stock ML Models
-
-[![CI](https://github.com/Atedgx12/Comp653StockMLModel/actions/workflows/ci.yml/badge.svg)](https://github.com/Atedgx12/Comp653StockMLModel/actions/workflows/ci.yml)
+# COMP 653 Stock Direction Prediction
 
 **Course**: COMP 653 Statistical Machine Learning, Summer 2026, Rice University  
-**Authors**: Zachary Powell (zp21@rice.edu) and Josh Levy (jl500@rice.edu)
+**Authors**: Zachary Powell (zp21@rice.edu) and Josh Levy (jl500@rice.edu)  
+**Hardware**: RTX 5080 (zach-ai) via Tailscale SSH
 
-Course project covering cross-sectional equity prediction, from tabular
-baselines to unified and multi-scale sequence models built from COMP 653
-algorithms.
+Cross-sectional equity direction prediction using a unified multi-branch network built entirely from COMP 653 algorithms.
 
 ---
 
@@ -77,13 +74,13 @@ git clone https://github.com/Atedgx12/Comp653StockMLModel
 cd Comp653StockMLModel
 
 # Python 3.11+
-python -m pip install -e .
+pip install -e .
 
 # Optional: sequence models
-python -m pip install -e ".[torch]"
+pip install -e ".[torch]"
 
 # Dev tools
-python -m pip install -e ".[dev]"
+pip install -e ".[dev]"
 ```
 
 ---
@@ -91,8 +88,15 @@ python -m pip install -e ".[dev]"
 ## Running
 
 ```bash
-# Full course pipeline
+# Full pipeline (run on RTX 5080 via SSH)
 python scripts/pipeline_course.py
+
+# Deploy from local and run remotely
+scp scripts/pipeline_course.py zach-ai:D:/StockModel/pipeline_course.py
+ssh zach-ai "C:\Users\kizzi\.venv\Scripts\python.exe -u D:\StockModel\pipeline_course.py 2>&1"
+
+# Sync outputs and push to GitHub
+.\sync_from_zach.ps1
 ```
 
 ---
