@@ -1,3 +1,4 @@
+# ruff: noqa: PLR0917
 """
 VolatilityEnsemble — combine the cross-sectional UCN volatility model with the
 multi-scale term-structure model into a single calibrated probability.
@@ -16,11 +17,12 @@ The combined probability is a convex blend a * P_ucn + (1 - a) * P_ms. The blend
 weight can be fixed or fit on a validation set with fit_weights.
 """
 import os
+
 import numpy as np
 
-from .unified_network import UnifiedCourseNetwork
-from .multiscale import MultiScaleTermStructureNet
 from ..training.metrics import roc_auc
+from .multiscale import MultiScaleTermStructureNet
+from .unified_network import UnifiedCourseNetwork
 
 
 class VolatilityEnsemble:
@@ -66,7 +68,8 @@ class VolatilityEnsemble:
     # ── Per-model probabilities ──────────────────────────────────────────
 
     def _ucn_prob(self, X_raw, seqs=None):
-        mu = self.ucn_scaler["mu"]; sd = self.ucn_scaler["sd"]
+        mu = self.ucn_scaler["mu"]
+        sd = self.ucn_scaler["sd"]
         Xs = (np.asarray(X_raw, dtype=float) - mu) / sd
         return np.asarray(self.ucn.predict_proba(Xs, seqs=seqs))[:, 1]
 
@@ -83,16 +86,19 @@ class VolatilityEnsemble:
     # ── Combined prediction ──────────────────────────────────────────────
 
     def predict_proba(self, X_raw=None, ucn_seqs=None, ms_seqs=None):
-        parts = []; wts = []
+        parts = []
+        wts = []
         if self.ucn is not None and X_raw is not None:
-            parts.append(self._ucn_prob(X_raw, ucn_seqs)); wts.append(self.weights[0])
+            parts.append(self._ucn_prob(X_raw, ucn_seqs))
+            wts.append(self.weights[0])
         if self.ms is not None and ms_seqs is not None:
-            parts.append(self._ms_prob(ms_seqs)); wts.append(self.weights[1])
+            parts.append(self._ms_prob(ms_seqs))
+            wts.append(self.weights[1])
         if not parts:
             raise ValueError("no model inputs supplied to the ensemble")
         wts = np.asarray(wts, dtype=float)
         wts = wts / wts.sum()
-        return sum(w * p for w, p in zip(wts, parts))
+        return sum(w * p for w, p in zip(wts, parts, strict=False))
 
     def predict(self, **kw):
         return (self.predict_proba(**kw) >= 0.5).astype(int)
@@ -113,9 +119,13 @@ class VolatilityEnsemble:
         if pu is None and pm is None:
             raise ValueError("no model inputs supplied to fit_weights")
         if pu is None:
-            self.weights = (0.0, 1.0); self.val_auc = roc_auc(y_true, pm); return self
+            self.weights = (0.0, 1.0)
+            self.val_auc = roc_auc(y_true, pm)
+            return self
         if pm is None:
-            self.weights = (1.0, 0.0); self.val_auc = roc_auc(y_true, pu); return self
+            self.weights = (1.0, 0.0)
+            self.val_auc = roc_auc(y_true, pu)
+            return self
         grid = np.linspace(0.0, 1.0, 21) if grid is None else np.asarray(grid)
         best_a, best_auc = 0.5, -1.0
         for a in grid:

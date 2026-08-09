@@ -12,13 +12,12 @@ Example — fine-tune only the MLP branch on recent data:
     )
 """
 from dataclasses import dataclass, field
-from typing import Tuple, Dict
 
 
 @dataclass
 class UCNConfig:
     # ── Architecture ─────────────────────────────────────────────────────
-    hidden_sizes: Tuple[int, ...] = (256, 128, 64)
+    hidden_sizes: tuple[int, ...] = (256, 128, 64)
     use_sent: bool = True
 
     # ── Optimizer (Adam, Module 6 Lec 6-5) ───────────────────────────────
@@ -46,12 +45,12 @@ class UCNConfig:
     pgd_steps: int = 5         # PGD inner steps (1 = FGSM)
 
     # ── Fine-tuning controls ─────────────────────────────────────────────
-    frozen_branches: Tuple[str, ...] = ()
+    frozen_branches: tuple[str, ...] = ()
     # Branch keys: 'lr' (logistic reg), 'nb' (naive bayes),
     #              'mlp' (deep MLP),    'sent' (sentiment),
     #              'meta' (meta layer)
 
-    branch_lrs: Dict[str, float] = field(default_factory=dict)
+    branch_lrs: dict[str, float] = field(default_factory=dict)
     # Override LR per branch, e.g. {'meta': 1e-4, 'mlp': 5e-4}
     # Branches not listed use the global cfg.lr
 
@@ -60,7 +59,7 @@ class UCNConfig:
     verbose: int = 20          # print every N epochs (0 = silent)
 
     # ── Branch param key prefixes (used internally) ───────────────────────
-    BRANCH_KEYS: Dict[str, Tuple[str, ...]] = field(default_factory=lambda: {
+    BRANCH_KEYS: dict[str, tuple[str, ...]] = field(default_factory=lambda: {
         'lr':   ('W_lr', 'b_lr'),
         'nb':   ('mu_nb', 'lsig_nb', 'W_nb', 'b_nb'),
         'mlp':  ('Wm', 'bm'),      # prefix match: Wm1, Wm2, ...

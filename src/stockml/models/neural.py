@@ -1,3 +1,4 @@
+# ruff: noqa: PLR0917
 """Neural network models for the stockml package.
 
 Contains two families:

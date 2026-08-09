@@ -4,13 +4,13 @@ Computes per-sample weights that emphasise recent data over older data,
 addressing the regime mismatch between a long training history and a
 recent out-of-sample test period.
 """
+
 import numpy as np
 import pandas as pd
-from typing import Union
 
 
 def exponential_time_weights(
-    dates: Union[np.ndarray, pd.Index],
+    dates: np.ndarray | pd.Index,
     decay: float = 2.0,
 ) -> np.ndarray:
     """

@@ -1,3 +1,4 @@
+# ruff: noqa: PLR0917
 """
 Decision layer and per-ticker calibration ledger.
 
@@ -17,6 +18,7 @@ band matches its own realized coverage. The ledger also accepts manual trader
 choices, so a ticker gains its own history from the decisions made on it.
 """
 import os
+
 import numpy as np
 import pandas as pd
 
@@ -40,7 +42,8 @@ def choose_batch(q, p0, hold_eps=0.005):
     Q = q.shape[1]
     mid = Q // 2
     med = q[:, mid]
-    lo = q[:, 0]; hi = q[:, -1]
+    lo = q[:, 0]
+    hi = q[:, -1]
     q25 = q[:, 1] if Q >= 3 else q[:, 0]
     q75 = q[:, -2] if Q >= 3 else q[:, -1]
     signal = np.where(med > hold_eps, "buy",

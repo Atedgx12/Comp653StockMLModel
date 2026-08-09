@@ -2,8 +2,8 @@
 Information Theory utilities — Module 2, Lec 2-6.
 H(X), I(X;Y) via histogram-based entropy estimation.
 """
+
 import numpy as np
-from typing import List, Tuple
 
 
 def entropy(x: np.ndarray, bins: int = 20) -> float:
@@ -26,10 +26,10 @@ def mutual_information(x: np.ndarray, y: np.ndarray, bins: int = 20) -> float:
 def select_features_by_mi(
     X: np.ndarray,
     y: np.ndarray,
-    feature_names: List[str],
+    feature_names: list[str],
     k: int = 20,
     verbose: bool = True,
-) -> Tuple[List[str], List[float]]:
+) -> tuple[list[str], list[float]]:
     """
     Rank features by I(X_j ; Y) and return top-k names and their MI scores.
 
@@ -42,7 +42,7 @@ def select_features_by_mi(
         print(f"\n[MI Feature Selection] Computing MI for {X.shape[1]} features ...",
               flush=True)
 
-    scored: List[Tuple[str, float]] = []
+    scored: list[tuple[str, float]] = []
     for j in range(X.shape[1]):
         mi = mutual_information(X[:, j], y.astype(float))
         scored.append((feature_names[j], mi))

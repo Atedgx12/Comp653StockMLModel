@@ -1,3 +1,4 @@
+# ruff: noqa: PLR0912, PLR0917
 """
 Multi scale temporal term structure network.
 
@@ -20,15 +21,15 @@ UCN_GPU is set and NumPy otherwise.
 from __future__ import annotations
 
 import math
-from typing import List, Optional
 
 import numpy as _np
-from ..backend import xp as np, to_device, to_cpu, new_rng
-from ..utils import sigmoid
+
+from ..backend import new_rng, to_cpu, to_device
+from ..backend import xp as np
 from ..training.metrics import roc_auc
+from ..utils import sigmoid
 
-
-DEFAULT_WINDOWS: List[int] = [1, 5, 10, 30, 90, 180]
+DEFAULT_WINDOWS: list[int] = [1, 5, 10, 30, 90, 180]
 
 
 def _nan_auc_mean(Yc, Pc):
@@ -82,9 +83,15 @@ def _lstm_backward(d_hT, cache, W, U, d_H_all=None):
               module. Added into the BPTT accumulator at each timestep so the
               attention loss flows all the way back through the recurrence.
     """
-    seqs = cache["seqs"]; h = cache["h"]; c = cache["c"]
-    gates = cache["gates"]; T = cache["T"]; H = cache["H"]
-    dW = np.zeros_like(W); dU = np.zeros_like(U); db = np.zeros(4 * H)
+    seqs = cache["seqs"]
+    h = cache["h"]
+    c = cache["c"]
+    gates = cache["gates"]
+    T = cache["T"]
+    H = cache["H"]
+    dW = np.zeros_like(W)
+    dU = np.zeros_like(U)
+    db = np.zeros(4 * H)
     d_h_next = d_hT.copy()
     d_c_next = np.zeros_like(d_hT)
     for t in reversed(range(T)):
@@ -119,7 +126,7 @@ def _lstm_backward(d_hT, cache, W, U, d_H_all=None):
 class MultiScaleTermStructureNet:
     """Six window LSTM branches fused with drift, six horizon heads, coupling."""
 
-    def __init__(self, windows: Optional[List[int]] = None, hidden=24,
+    def __init__(self, windows: list[int] | None = None, hidden=24,
                  trunk_sizes=(128, 64), lr=1e-3, beta1=0.9, beta2=0.999,
                  lam=1e-3, dropout_rate=0.3, smooth_lambda=0.3,
                  additivity_lambda=0.0,
@@ -136,7 +143,10 @@ class MultiScaleTermStructureNet:
         self.B = len(self.windows)
         self.H = hidden
         self.trunk_sizes = trunk_sizes
-        self.lr = lr; self.beta1 = beta1; self.beta2 = beta2; self.lam = lam
+        self.lr = lr
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.lam = lam
         self.dropout_rate = dropout_rate
         self.smooth_lambda = smooth_lambda
         # Variance additivity coupling. The squared 90 percent band width is an
@@ -146,11 +156,15 @@ class MultiScaleTermStructureNet:
         # long horizon band regularize the noisy short horizon ones.
         self.additivity_lambda = additivity_lambda
         self._Ht = None
-        self.epochs = epochs; self.batch_size = batch_size
-        self.patience = patience; self.seed = seed; self.verbose = verbose
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.patience = patience
+        self.seed = seed
+        self.verbose = verbose
         # Reduce-on-plateau schedule: when validation loss stops improving for
         # lr_patience epochs the rate is multiplied by lr_decay down to min_lr.
-        self.lr_decay = lr_decay; self.lr_patience = lr_patience
+        self.lr_decay = lr_decay
+        self.lr_patience = lr_patience
         self.min_lr = min_lr
         # Cosine warm restarts. When enabled the rate follows a cosine from the
         # base rate down to min_lr over restart_period epochs, then jumps back to
@@ -274,10 +288,12 @@ class MultiScaleTermStructureNet:
         if self.d_ctx > 0 and ctx is not None:
             gate = 2.0 * sigmoid(self.params["w_ctx"])
             ctx_g = ctx * gate
-            parts = parts + [ctx_g]
-            c["ctx"] = ctx; c["gate"] = gate
+            parts = [*parts, ctx_g]
+            c["ctx"] = ctx
+            c["gate"] = gate
         fuse = np.concatenate(parts, axis=1)
-        c["caches"] = caches; c["fuse"] = fuse
+        c["caches"] = caches
+        c["fuse"] = fuse
 
         A = fuse
         p = self.dropout_rate
@@ -288,7 +304,8 @@ class MultiScaleTermStructureNet:
                 mask = (self._rng.random(A.shape) >= p).astype(A.dtype) / (1.0 - p)
                 A = A * mask
                 c[f"drop{i+1}"] = mask
-            c[f"Z{i+1}"] = Z; c[f"A{i+1}"] = A
+            c[f"Z{i+1}"] = Z
+            c[f"A{i+1}"] = A
         logits = A @ self.params["W_head"] + self.params["b_head"]
         c["trunk"] = A
         c["P"] = sigmoid(logits)
@@ -396,8 +413,11 @@ class MultiScaleTermStructureNet:
         d_embs_in : list of B arrays (N, H)  gradient back to LSTM embeddings.
         d_W_Q, d_W_K, d_W_V : gradients for the projection matrices.
         """
-        E = attn_cache["E"]; Q = attn_cache["Q"]
-        K = attn_cache["K"]; V = attn_cache["V"]; A = attn_cache["A"]
+        E = attn_cache["E"]
+        Q = attn_cache["Q"]
+        K = attn_cache["K"]
+        V = attn_cache["V"]
+        A = attn_cache["A"]
         da = self.d_attn
         scale = 1.0 / _np.sqrt(da).astype(E.dtype)
 
@@ -452,7 +472,7 @@ class MultiScaleTermStructureNet:
         # log space keeps the gradient well conditioned regardless of the return
         # units, and the width depends only on the positive increments so the
         # gradient flows through softplus into the increment logits.
-        N, B, Q = q.shape
+        N, B, _Q = q.shape
         if B < 3 or self.additivity_lambda <= 0:
             return np.zeros_like(raw)
         eps = 1e-6
@@ -499,7 +519,8 @@ class MultiScaleTermStructureNet:
         # adds into the same increment logits when enabled.
         need_q = (Yret is not None) or (self.additivity_lambda > 0)
         if need_q:
-            q = c["q"]; raw = c["raw"]
+            q = c["q"]
+            raw = c["raw"]
             Q, B = self.Q, self.B
             draw = np.zeros_like(raw)
             if Yret is not None:
@@ -534,7 +555,8 @@ class MultiScaleTermStructureNet:
         d_fuse = dA @ self.params["W1"].T
 
         # Split the fused gradient into embedding and drift parts.
-        H = self.H; B = self.B
+        H = self.H
+        B = self.B
         # Static context gradient through the hierarchy gate, if present.
         if self.d_ctx > 0:
             if "ctx" in c:
@@ -600,14 +622,15 @@ class MultiScaleTermStructureNet:
         self.scalers = []
         for s in seq_list:
             flat = s.reshape(-1, s.shape[2])
-            mu = flat.mean(0); sd = flat.std(0) + 1e-9
+            mu = flat.mean(0)
+            sd = flat.std(0) + 1e-9
             self.scalers.append((mu, sd))
 
     def _apply_scalers(self, seq_list):
         """Standardize each branch with its stored scaler, if present."""
         if not self.scalers:
             return seq_list
-        return [(s - mu) / sd for s, (mu, sd) in zip(seq_list, self.scalers)]
+        return [(s - mu) / sd for s, (mu, sd) in zip(seq_list, self.scalers, strict=False)]
 
     def _apply_ctx(self, ctx):
         """Standardize a static context matrix with the stored scaler."""
@@ -629,7 +652,8 @@ class MultiScaleTermStructureNet:
         ctx_d = None
         if ctx is not None:
             ctx_d = to_device(ctx).astype(self.dtype)
-            mu = ctx_d.mean(0); sd = ctx_d.std(0) + 1e-9
+            mu = ctx_d.mean(0)
+            sd = ctx_d.std(0) + 1e-9
             self.ctx_scaler = (mu, sd)
             ctx_d = (ctx_d - mu) / sd
         Y = to_device(Y)
@@ -640,10 +664,14 @@ class MultiScaleTermStructureNet:
             self._init_weights(d, d_ctx)
         N = seq_list[0].shape[0]
         n_val = max(int(N * 0.15), 1)
-        tr = slice(0, N - n_val); va = slice(N - n_val, N)
+        tr = slice(0, N - n_val)
+        va = slice(N - n_val, N)
         idx = _np.arange(N - n_val)
-        best = 1e18; best_p = None; bad = 0
-        cur_lr = self.lr; plateau = 0
+        best = 1e18
+        best_p = None
+        bad = 0
+        cur_lr = self.lr
+        plateau = 0
         # Fixed slices for monitoring train and validation AUC on log steps.
         seq_va = [seq_list[k][va] for k in range(self.B)]
         Yc_va = to_cpu(Y[va])
@@ -668,7 +696,9 @@ class MultiScaleTermStructureNet:
                     cycle_start = epoch + 1
                     cycle_len = max(1, int(cycle_len * self.restart_mult))
             self._idx_rng.shuffle(idx)
-            ep_bce = 0.0; ep_acc = 0.0; n_b = 0
+            ep_bce = 0.0
+            ep_acc = 0.0
+            n_b = 0
             for s in range(0, len(idx), self.batch_size):
                 b = to_device(idx[s:s + self.batch_size])
                 sl = [seq_list[k][tr][b] for k in range(self.B)]
@@ -677,7 +707,9 @@ class MultiScaleTermStructureNet:
                 yr = Yret_d[tr][b] if Yret_d is not None else None
                 g = self._backward(c, Y[tr][b], yr)
                 self._update(g, cur_lr)
-                Pbc = to_cpu(c["P"]); Ybc = to_cpu(Y[tr][b]); eps = 1e-12
+                Pbc = to_cpu(c["P"])
+                Ybc = to_cpu(Y[tr][b])
+                eps = 1e-12
                 mb = ~_np.isnan(Ybc)
                 if mb.any():
                     bce_el = -(Ybc*_np.log(Pbc+eps)
@@ -686,8 +718,10 @@ class MultiScaleTermStructureNet:
                     ep_acc += float(((Pbc[mb] >= 0.5) == (Ybc[mb] >= 0.5)).mean())
                     n_b += 1
             cval = self._forward(seq_va, ctx_va, training=False)
-            P = cval["P"]; eps = 1e-12
-            Pc = to_cpu(P); Yc = Yc_va
+            P = cval["P"]
+            eps = 1e-12
+            Pc = to_cpu(P)
+            Yc = Yc_va
             mv = ~_np.isnan(Yc)
             bce_el = -(Yc*_np.log(Pc+eps) + (1-Yc)*_np.log(1-Pc+eps))
             bce = float(bce_el[mv].mean())
@@ -695,7 +729,9 @@ class MultiScaleTermStructureNet:
             tr_bce = ep_bce / max(n_b, 1)
             tr_acc = ep_acc / max(n_b, 1)
             if bce < best - 1e-6:
-                best = bce; best_p = {k: v.copy() for k, v in self.params.items()}; bad = 0
+                best = bce
+                best_p = {k: v.copy() for k, v in self.params.items()}
+                bad = 0
                 plateau = 0
             else:
                 bad += 1
@@ -731,7 +767,8 @@ class MultiScaleTermStructureNet:
                                  ctx_va, training=False)
             q = to_cpu(cval["q"])                 # (nval, B, Q)
             yv = to_cpu(Yret_d[va])               # (nval, B)
-            lo = q[:, :, 0]; hi = q[:, :, -1]
+            lo = q[:, :, 0]
+            hi = q[:, :, -1]
             scores = _np.maximum(lo - yv, yv - hi)   # conformity score per row
             n = scores.shape[0]
             k = int(_np.ceil((1 - self.alpha) * (n + 1))) - 1
@@ -795,7 +832,8 @@ class MultiScaleTermStructureNet:
         cd = d["meta::conformal_delta"]
         net.conformal_delta = cd if cd.size else None
         if "meta::scaler_mu" in d.files:
-            mus = d["meta::scaler_mu"]; sds = d["meta::scaler_sd"]
+            mus = d["meta::scaler_mu"]
+            sds = d["meta::scaler_sd"]
             net.scalers = [(to_device(mus[i]), to_device(sds[i]))
                            for i in range(len(mus))]
         if "meta::d_ctx" in d.files:
@@ -821,7 +859,8 @@ class MultiScaleTermStructureNet:
         for k in list(self.params.keys()):
             dk = f"param::{k}"
             if dk in src.files and tuple(src[dk].shape) == tuple(self.params[k].shape):
-                self.params[k] = to_device(src[dk]); copied.append(k)
+                self.params[k] = to_device(src[dk])
+                copied.append(k)
             else:
                 reinit.append(k)
         for k in self.params:
@@ -832,4 +871,3 @@ class MultiScaleTermStructureNet:
             print(f"  [warm start] copied {len(copied)} tensors from {path}, "
                   f"reinitialized {len(reinit)}: {sorted(reinit)}", flush=True)
         return self
-

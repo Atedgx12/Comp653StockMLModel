@@ -2,13 +2,13 @@
 Data ingestion: ticker universe, price download, volume, VADER sentiment.
 Extracted from pipeline_course.py — all caching logic preserved.
 """
-import os
 import io
+import os
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from datetime import datetime
-from typing import List, Optional
 
 # ── Default cache directory (same folder as the calling script) ────────────
 _DEFAULT_CACHE = os.path.dirname(os.path.abspath(__file__))
@@ -51,7 +51,7 @@ _SP500_TICKERS = [
 ]
 
 
-def get_tickers(use_wikipedia: bool = True) -> List[str]:
+def get_tickers(use_wikipedia: bool = True) -> list[str]:
     """Return the S&P 500 ticker universe. Falls back to hardcoded list.
 
     Wikipedia blocks requests that arrive without a browser User-Agent, which
@@ -72,7 +72,7 @@ def get_tickers(use_wikipedia: bool = True) -> List[str]:
     return _SP500_TICKERS
 
 
-def _tickers_from_wikipedia() -> Optional[List[str]]:
+def _tickers_from_wikipedia() -> list[str] | None:
     """Fetch S&P 500 symbols from Wikipedia using a browser User-Agent."""
     import urllib.request
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
@@ -98,7 +98,7 @@ def _tickers_from_wikipedia() -> Optional[List[str]]:
         return None
 
 
-def _tickers_from_csv() -> Optional[List[str]]:
+def _tickers_from_csv() -> list[str] | None:
     """Fetch S&P 500 symbols from a stable public CSV of constituents."""
     import urllib.request
     url = ("https://raw.githubusercontent.com/datasets/"
@@ -121,9 +121,9 @@ def _tickers_from_csv() -> Optional[List[str]]:
         return None
 
 
-def _yf_download_field(tickers: List[str], field: str,
+def _yf_download_field(tickers: list[str], field: str,
                        start: str, end: str,
-                       batch_size: int = 50) -> Optional[pd.DataFrame]:
+                       batch_size: int = 50) -> pd.DataFrame | None:
     """Download one OHLCV field for a list of tickers in batches.
 
     Returns a wide DataFrame indexed by date with one column per ticker, or
@@ -152,10 +152,10 @@ def _yf_download_field(tickers: List[str], field: str,
 
 
 def download_prices(
-    tickers: List[str],
+    tickers: list[str],
     start: str = "2015-01-01",
-    end: Optional[str] = None,
-    cache_dir: Optional[str] = None,
+    end: str | None = None,
+    cache_dir: str | None = None,
     batch_size: int = 50,
 ) -> pd.DataFrame:
     """Download (or load cached) adjusted close prices.
@@ -197,12 +197,12 @@ def download_prices(
 
 
 def download_volume(
-    tickers: List[str],
+    tickers: list[str],
     start: str = "2015-01-01",
-    end: Optional[str] = None,
-    cache_dir: Optional[str] = None,
+    end: str | None = None,
+    cache_dir: str | None = None,
     batch_size: int = 50,
-) -> Optional[pd.DataFrame]:
+) -> pd.DataFrame | None:
     """Download (or load cached) daily volume."""
     cache_dir = cache_dir or _DEFAULT_CACHE
     end       = end or datetime.today().strftime("%Y-%m-%d")
@@ -237,9 +237,9 @@ def download_volume(
 
 
 def fetch_sentiment(
-    tickers: List[str],
+    tickers: list[str],
     close_index: pd.Index,
-    cache_dir: Optional[str] = None,
+    cache_dir: str | None = None,
 ) -> pd.DataFrame:
     """Fetch and cache VADER NLP sentiment scores from Yahoo Finance news."""
     from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
@@ -296,10 +296,10 @@ def fetch_sentiment(
 
 def filter_universe(
     close: pd.DataFrame,
-    vol: Optional[pd.DataFrame] = None,
+    vol: pd.DataFrame | None = None,
     drop_delisted: bool = True,
     stale_window: int = 60,
-    min_dollar_vol: Optional[float] = None,
+    min_dollar_vol: float | None = None,
 ) -> pd.DataFrame:
     """Drop delisted and low liquidity names from the price panel.
 

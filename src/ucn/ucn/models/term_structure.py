@@ -1,3 +1,4 @@
+# ruff: noqa: PLR0917
 """
 Volatility term structure network.
 
@@ -25,15 +26,15 @@ when UCN_GPU is set and on NumPy otherwise.
 from __future__ import annotations
 
 import math
-from typing import List, Optional
 
 import numpy as _np
-from ..backend import xp as np, to_device, to_cpu, new_rng
+
+from ..backend import new_rng, to_cpu, to_device
+from ..backend import xp as np
 from ..utils import sigmoid
 
-
 # Default horizons in trading days that make up the volatility term structure.
-DEFAULT_HORIZONS: List[int] = [1, 5, 10, 30, 90, 180]
+DEFAULT_HORIZONS: list[int] = [1, 5, 10, 30, 90, 180]
 
 
 class VolTermStructureNet:
@@ -57,7 +58,7 @@ class VolTermStructureNet:
         Random seed.
     """
 
-    def __init__(self, horizons: Optional[List[int]] = None,
+    def __init__(self, horizons: list[int] | None = None,
                  hidden_sizes=(128, 64), lr=1e-3, beta1=0.9, beta2=0.999,
                  lam=1e-3, dropout_rate=0.3, smooth_lambda=0.1,
                  epochs=300, batch_size=2048, patience=30, seed=42,
@@ -219,16 +220,20 @@ class VolTermStructureNet:
 
         for epoch in range(self.epochs):
             self._idx_rng.shuffle(idx)
-            ep_bce = 0.0; ep_acc = 0.0; n_b = 0
+            ep_bce = 0.0
+            ep_acc = 0.0
+            n_b = 0
             for s in range(0, len(X_tr), self.batch_size):
                 b = to_device(idx[s:s + self.batch_size])
                 c = self._forward(X_tr[b], training=True)
                 g = self._backward(c, Y_tr[b])
                 self._update(g, self.lr)
-                Pb = c["P"]; eps = 1e-12
+                Pb = c["P"]
+                eps = 1e-12
                 ep_bce += float(to_cpu(-(Y_tr[b]*np.log(Pb+eps)
                                          + (1-Y_tr[b])*np.log(1-Pb+eps)).mean()))
-                Pbc = to_cpu(Pb); Ybc = to_cpu(Y_tr[b])
+                Pbc = to_cpu(Pb)
+                Ybc = to_cpu(Y_tr[b])
                 ep_acc += float(((Pbc >= 0.5) == (Ybc >= 0.5)).mean())
                 n_b += 1
 
@@ -239,7 +244,8 @@ class VolTermStructureNet:
                                  + (1 - Y_val) * np.log(1 - P + eps)).mean()))
             # Accuracy on the CPU to avoid a CuPy boolean reduction kernel that
             # fails to compile against the mismatched CUDA headers on this host.
-            Pc = to_cpu(P); Yc = to_cpu(Y_val)
+            Pc = to_cpu(P)
+            Yc = to_cpu(Y_val)
             val_acc = float(((Pc >= 0.5) == (Yc >= 0.5)).mean())
             tr_bce = ep_bce / max(n_b, 1)
             tr_acc = ep_acc / max(n_b, 1)

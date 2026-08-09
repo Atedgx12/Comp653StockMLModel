@@ -22,7 +22,9 @@ The forward pass processes the full (N, T, d) sequence each batch.
 Backpropagation Through Time (BPTT) propagates gradients back T steps.
 """
 import math
+
 import numpy as np
+import pandas as pd
 
 
 class LSTMScratch:
@@ -72,7 +74,7 @@ class LSTMScratch:
           'gates'  : (N, T, 4H) pre-activation gate values (for BPTT)
           'h_T'    : (N, H)     final hidden state  ← feed to meta-layer
         """
-        N, T, d = X.shape
+        N, T, _d = X.shape
         H       = self.H
         W, U, b = self.params["W"], self.params["U"], self.params["b"]
 
@@ -117,7 +119,7 @@ class LSTMScratch:
         dX     : (N, T, d)  gradient w.r.t. input sequence
         """
         X, h, c, gates_pre = cache["X"], cache["h"], cache["c"], cache["gates"]
-        N, T, d = X.shape
+        N, T, _d = X.shape
         H       = self.H
         W, U    = self.params["W"], self.params["U"]
 
@@ -194,7 +196,6 @@ def build_sequences(
     seqs  : float64 array  (N_valid, lookback, d)
     mask  : bool array     (len(X_df),)  — True for rows included in seqs.
     """
-    import pandas as pd
 
     feat_cols = [c for c in X_df.columns if c != ticker_col]
     d    = len(feat_cols)
@@ -211,7 +212,7 @@ def build_sequences(
     df_pos = X_df.reset_index()          # adds original date as a column
     date_col = df_pos.columns[0]         # first col is the date index
 
-    for ticker_name, grp in df_pos.groupby(ticker_col):
+    for _ticker_name, grp in df_pos.groupby(ticker_col):
         grp_s   = grp.sort_values(date_col)           # sort by date
         pos     = grp_s.index.values                   # positions in original df
         vals    = grp_s[feat_cols].values.astype(np.float64)
