@@ -17,6 +17,7 @@ band matches its own realized coverage. The ledger also accepts manual trader
 choices, so a ticker gains its own history from the decisions made on it.
 """
 import os
+
 import numpy as np
 import pandas as pd
 

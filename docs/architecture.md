@@ -7,7 +7,7 @@
 
 ## 1. Overview
 
-The model predicts realized volatility across six horizons simultaneously, ranging from intraday minutes to 180-day daily. Six LSTM branches, one per horizon, each read a different lookback window of the feature sequence. Their embeddings are refined by a dual attention mechanism before being fused through a shared trunk that produces six probability heads and five quantile band heads.
+The model predicts realized volatility across six horizons simultaneously, ranging from intraday minutes to 180-day daily. Six LSTM branches, one per horizon, each read a different lookback window of the feature sequence. Their embeddings are refined by a dual attention mechanism before being fused through a shared trunk that produces six probability heads and five quantiles for each of the six return-band horizons.
 
 ---
 
@@ -169,14 +169,14 @@ Two dense ReLU layers (128 → 64) with dropout (rate 0.3) applied during traini
 
 | Component | Parameters | Count (H=24, d=13, B=6, d_ctx=25) |
 |---|---|---|
-| LSTM branches (×6) | W, U, b per branch | 6 × (13×96 + 24×96 + 96) = 6 × 3,552 = 21,312 |
+| LSTM branches (×6) | W, U, b per branch | 6 × (13×96 + 24×96 + 96) = 21,888 |
 | Cross-branch attention | W_Q, W_K (24→12), W_V (24→24) | 24×12 + 24×12 + 24×24 = 1,152 |
-| Trunk FC layers | W1 (143×128), W2 (128×64) | 18,304 + 8,192 = 26,496 |
-| Output heads | W_head (64×6), W_q (64×30) | 384 + 1,920 = 2,304 |
+| Trunk FC layers | W1 (289×128), W2 (128×64), biases | 36,992 + 8,192 + 192 = 45,376 |
+| Output heads | W_head (64×6), W_q (64×30), biases | 384 + 1,920 + 36 = 2,340 |
 | Context gate | w_ctx (25,) | 25 |
-| **Total** | | **~51,289** |
+| **Total** | | **70,781** |
 
-The temporal attention adds zero new parameters (the query is `h_T` itself). The cross-branch attention adds 1,152 parameters (~2.2% of the total).
+The fused input has `(2B - 1)H + d_ctx = 11×24 + 25 = 289` features: six embeddings, five drift vectors, and 25 context values. The temporal attention adds zero parameters (the query is `h_T` itself), while the cross-branch attention adds 1,152 parameters (about 1.6% of the total).
 
 ---
 
@@ -188,7 +188,7 @@ The temporal attention adds zero new parameters (the query is `h_T` itself). The
 | Max epochs | 3000 |
 | Early stopping patience | 150 |
 | Optimizer | Adam (β₁=0.9, β₂=0.999) |
-| LR schedule | Reduce-on-plateau (decay 0.5, patience 40, min 1e-5) |
+| LR schedule | Reduce-on-plateau (decay 0.5, patience 200, min 1e-6) |
 | Regularization | L2 weight decay 1e-3 |
 | Dropout | 0.3 |
 | Smooth lambda | 0.3 |
@@ -199,7 +199,7 @@ The temporal attention adds zero new parameters (the query is `h_T` itself). The
 
 ---
 
-## 6. Key Results (loose-keep label-pct 0.3, pre-attention baseline)
+## 6. Key Results (reported final run, label-pct 0.3)
 
 | Scale | Horizon | AUC |
 |---|---|---|

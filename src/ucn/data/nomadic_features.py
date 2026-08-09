@@ -18,9 +18,9 @@ from ucn.data.nomadic_features import add_nomadic_features
 feat = add_nomadic_features(c, feat)
 """
 from __future__ import annotations
+
 import numpy as np
 import pandas as pd
-
 
 # ── Oscillators ──────────────────────────────────────────────────────────────
 

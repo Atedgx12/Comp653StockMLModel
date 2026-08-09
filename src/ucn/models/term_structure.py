@@ -25,15 +25,15 @@ when UCN_GPU is set and on NumPy otherwise.
 from __future__ import annotations
 
 import math
-from typing import List, Optional
 
 import numpy as _np
-from ..backend import xp as np, to_device, to_cpu, new_rng
+
+from ..backend import new_rng, to_cpu, to_device
+from ..backend import xp as np
 from ..utils import sigmoid
 
-
 # Default horizons in trading days that make up the volatility term structure.
-DEFAULT_HORIZONS: List[int] = [1, 5, 10, 30, 90, 180]
+DEFAULT_HORIZONS: list[int] = [1, 5, 10, 30, 90, 180]
 
 
 class VolTermStructureNet:
@@ -57,7 +57,7 @@ class VolTermStructureNet:
         Random seed.
     """
 
-    def __init__(self, horizons: Optional[List[int]] = None,
+    def __init__(self, horizons: list[int] | None = None,
                  hidden_sizes=(128, 64), lr=1e-3, beta1=0.9, beta2=0.999,
                  lam=1e-3, dropout_rate=0.3, smooth_lambda=0.1,
                  epochs=300, batch_size=2048, patience=30, seed=42,

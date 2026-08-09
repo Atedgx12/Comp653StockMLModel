@@ -20,15 +20,15 @@ UCN_GPU is set and NumPy otherwise.
 from __future__ import annotations
 
 import math
-from typing import List, Optional
 
 import numpy as _np
-from ..backend import xp as np, to_device, to_cpu, new_rng
-from ..utils import sigmoid
+
+from ..backend import new_rng, to_cpu, to_device
+from ..backend import xp as np
 from ..training.metrics import roc_auc
+from ..utils import sigmoid
 
-
-DEFAULT_WINDOWS: List[int] = [1, 5, 10, 30, 90, 180]
+DEFAULT_WINDOWS: list[int] = [1, 5, 10, 30, 90, 180]
 
 
 def _nan_auc_mean(Yc, Pc):
@@ -119,7 +119,7 @@ def _lstm_backward(d_hT, cache, W, U, d_H_all=None):
 class MultiScaleTermStructureNet:
     """Six window LSTM branches fused with drift, six horizon heads, coupling."""
 
-    def __init__(self, windows: Optional[List[int]] = None, hidden=24,
+    def __init__(self, windows: list[int] | None = None, hidden=24,
                  trunk_sizes=(128, 64), lr=1e-3, beta1=0.9, beta2=0.999,
                  lam=1e-3, dropout_rate=0.3, smooth_lambda=0.3,
                  additivity_lambda=0.0,
@@ -274,7 +274,7 @@ class MultiScaleTermStructureNet:
         if self.d_ctx > 0 and ctx is not None:
             gate = 2.0 * sigmoid(self.params["w_ctx"])
             ctx_g = ctx * gate
-            parts = parts + [ctx_g]
+            parts = [*parts, ctx_g]
             c["ctx"] = ctx; c["gate"] = gate
         fuse = np.concatenate(parts, axis=1)
         c["caches"] = caches; c["fuse"] = fuse
@@ -452,7 +452,7 @@ class MultiScaleTermStructureNet:
         # log space keeps the gradient well conditioned regardless of the return
         # units, and the width depends only on the positive increments so the
         # gradient flows through softplus into the increment logits.
-        N, B, Q = q.shape
+        N, B, _Q = q.shape
         if B < 3 or self.additivity_lambda <= 0:
             return np.zeros_like(raw)
         eps = 1e-6
@@ -607,7 +607,7 @@ class MultiScaleTermStructureNet:
         """Standardize each branch with its stored scaler, if present."""
         if not self.scalers:
             return seq_list
-        return [(s - mu) / sd for s, (mu, sd) in zip(seq_list, self.scalers)]
+        return [(s - mu) / sd for s, (mu, sd) in zip(seq_list, self.scalers, strict=False)]
 
     def _apply_ctx(self, ctx):
         """Standardize a static context matrix with the stored scaler."""
@@ -785,7 +785,7 @@ class MultiScaleTermStructureNet:
         """Reconstruct a trained network from a .npz checkpoint."""
         if not str(path).endswith(".npz"):
             path = str(path) + ".npz"
-        d = _np.load(path, allow_pickle=True)
+        d = _np.load(path, allow_pickle=False)
         net = cls(windows=d["meta::windows"].tolist(),
                   hidden=int(d["meta::hidden"]),
                   trunk_sizes=tuple(d["meta::trunk_sizes"].tolist()),
@@ -816,7 +816,7 @@ class MultiScaleTermStructureNet:
             path = str(path) + ".npz"
         if not self.params:
             self._init_weights(d)
-        src = _np.load(path, allow_pickle=True)
+        src = _np.load(path, allow_pickle=False)
         copied, reinit = [], []
         for k in list(self.params.keys()):
             dk = f"param::{k}"
@@ -832,4 +832,3 @@ class MultiScaleTermStructureNet:
             print(f"  [warm start] copied {len(copied)} tensors from {path}, "
                   f"reinitialized {len(reinit)}: {sorted(reinit)}", flush=True)
         return self
-

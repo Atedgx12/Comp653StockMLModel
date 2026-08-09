@@ -1,27 +1,28 @@
 # Contributing
 
-This is a single author course project, but the conventions below keep the codebase clean if a collaborator joins later.
+These conventions keep changes reviewable and the two model packages usable
+across supported environments.
 
 ## Local setup
 
-```powershell
+```bash
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
+source .venv/bin/activate  # Windows PowerShell: .\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
 ```
 
 To enable PyTorch backed sequence models:
 
-```powershell
-pip install -e ".[torch]"
+```bash
+python -m pip install -e ".[torch]"
 ```
 
 ## Running checks before commit
 
-```powershell
+```bash
 ruff check src tests
-mypy src               # advisory; not blocking
-pytest -q
+mypy src/stockml
+pytest --cov=stockml --cov=ucn --cov-report=term-missing
 ```
 
 ## Data
@@ -33,4 +34,6 @@ Raw data is gitignored. See [data/README.md](data/README.md) for the directory l
 - Public functions have type annotations on every parameter and return value.
 - Per asset rolling computations live behind `groupby('ticker')` so state never leaks across tickers.
 - Forward looking targets always use `shift(-h)` and never `shift(h)`.
-- Tests are unit level and use the synthetic panel fixture in `tests/conftest.py`. End to end tests use the same fixture so the suite stays under thirty seconds on commodity hardware.
+- Tests use deterministic synthetic data and must not make live network calls.
+- Scientific result changes include the exact command, data manifest, split
+  dates, seed, and machine-readable per-horizon metrics.

@@ -3,8 +3,9 @@ MLP from scratch — Module 5, Lec 5-5.
 Two or more hidden ReLU layers, softmax output, mini-batch backprop.
 """
 import numpy as np
-from ..utils import softmax, cross_entropy_softmax
+
 from ..training.metrics import accuracy
+from ..utils import cross_entropy_softmax, softmax
 
 
 class MLPScratch:
@@ -24,7 +25,7 @@ class MLPScratch:
 
     def _init_weights(self, d_in: int, d_out: int):
         rng   = np.random.default_rng(self.seed)
-        sizes = [d_in] + list(self.hidden_sizes) + [d_out]
+        sizes = [d_in, *list(self.hidden_sizes), d_out]
         for i in range(len(sizes) - 1):
             s = np.sqrt(2.0 / sizes[i])
             self.params[f"W{i+1}"] = rng.standard_normal((sizes[i], sizes[i+1])) * s

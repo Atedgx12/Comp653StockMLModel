@@ -11,7 +11,9 @@ site-packages/nvidia/*/bin.  Those directories are not on the default DLL
 search path, so I register them before importing CuPy.  Without this step
 CuPy finds nvrtc but fails to load cublas.
 """
+import contextlib
 import os
+
 import numpy as _np
 
 _WANT_GPU = os.environ.get("UCN_GPU", "0") == "1"
@@ -22,22 +24,16 @@ def _register_cuda_dll_dirs() -> None:
     import glob
     import site
     roots = set()
-    try:
+    with contextlib.suppress(Exception):
         roots.update(site.getsitepackages())
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         roots.add(site.getusersitepackages())
-    except Exception:
-        pass
     for sp in roots:
         pattern = os.path.join(sp, "nvidia", "*", "bin")
         for bindir in glob.glob(pattern):
             if os.path.isdir(bindir):
-                try:
+                with contextlib.suppress(Exception):
                     os.add_dll_directory(bindir)
-                except Exception:
-                    pass
 
 
 xp = _np

@@ -11,8 +11,9 @@ Backpropagation through time (BPTT) is implemented explicitly so every
 gradient follows from first principles (Lec 5-5 chain rule extended to
 recurrent connections).
 """
-import numpy as np
 import math
+
+import numpy as np
 
 
 class ElmanRNNBranch:

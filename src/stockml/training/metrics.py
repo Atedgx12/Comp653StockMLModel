@@ -40,7 +40,7 @@ def roc_auc_wilcoxon(y_true: np.ndarray, y_score: np.ndarray) -> float:
     if n1 == 0 or n0 == 0:
         return float("nan")
     order = np.argsort(y_score)
-    ranks = np.empty(len(y_score), dtype=float)
+    ranks: np.ndarray = np.empty(len(y_score), dtype=float)
     ranks[order] = np.arange(1, len(y_score) + 1, dtype=float)
     # Average ranks for ties
     unique_scores, inverse, counts = np.unique(y_score, return_inverse=True, return_counts=True)

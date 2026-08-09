@@ -31,8 +31,6 @@ X_te, y_te, dates_te = store.load_range(start="2020-01-01", end="2022-01-01", ho
 # Load everything for a given horizon
 X, y, dates = store.load_all(horizon=90)
 """
-import os
-from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -116,7 +114,6 @@ class FeatureStore:
                                .astype(str).radd("t"))
 
         feat_cols = [c for c in X_df.columns if c != "ticker"]
-        n_feat    = len(feat_cols)
 
         rows_inserted = 0
         for start in range(0, len(df), batch_size):
@@ -148,10 +145,10 @@ class FeatureStore:
     def load_range(
         self,
         horizon: int,
-        start: Optional[str] = None,
-        end: Optional[str] = None,
+        start: str | None = None,
+        end: str | None = None,
         label_only: bool = True,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Load feature vectors for a date range.
 
@@ -189,7 +186,7 @@ class FeatureStore:
         dates  = np.array([r[2] for r in rows], dtype="datetime64[D]")
         return X, y, dates
 
-    def load_all(self, horizon: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def load_all(self, horizon: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         return self.load_range(horizon=horizon)
 
     # ── Metadata ───────────────────────────────────────────────────────────
@@ -260,7 +257,7 @@ def build_store(
     store = FeatureStore(db_path)
     for h in horizons:
         print(f"\nBuilding horizon={h} ...", flush=True)
-        X_df, y_df, feat_names, _ = make_features(
+        X_df, y_df, _feat_names, _ = make_features(
             close, sent_df, vol_df, horizon=h, stride=1)
         # Attach ticker column from the DataFrame's construction order
         store.upsert(X_df, y_df, horizon=h)

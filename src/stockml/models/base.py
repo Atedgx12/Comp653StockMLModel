@@ -21,6 +21,7 @@ class BaseModel(ABC):
         y_train: np.ndarray,
         X_val: np.ndarray | None = None,
         y_val: np.ndarray | None = None,
+        feature_names: list[str] | None = None,
     ) -> BaseModel:
         ...
 

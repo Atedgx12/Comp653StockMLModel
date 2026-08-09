@@ -1,5 +1,5 @@
 """Shared math utilities used by all model modules."""
-import numpy as np
+from .backend import xp as np
 
 
 def sigmoid(z: np.ndarray) -> np.ndarray:

@@ -4,7 +4,6 @@ Each model exposes the ``BaseModel`` interface so the training driver can
 swap families behind a single config switch.
 """
 from .base import BaseModel
-from .lightgbm_models import LightGBMClassifier, LightGBMRegressor
 from .linear import LinearRegressor, LogisticClassifier
 from .neural import UnifiedCourseNetwork
 from .online_linear import OnlineLinearRegressor
@@ -27,6 +26,10 @@ def build_model(model_cfg: dict, task: str) -> BaseModel:
     if family == "linear":
         return LogisticClassifier(**params) if task == "classification" else LinearRegressor(**params)
     if family == "gbm":
+        # Import lazily so the NumPy models and test suite remain usable on
+        # systems that do not have LightGBM's native OpenMP runtime installed.
+        from .lightgbm_models import LightGBMClassifier, LightGBMRegressor
+
         if task == "classification":
             return LightGBMClassifier(params)
         return LightGBMRegressor(params)
@@ -39,3 +42,15 @@ def build_model(model_cfg: dict, task: str) -> BaseModel:
 
         return build_torch_model(family, params, task=task)
     raise ValueError(f"Unknown model family: {family}")
+
+
+def __getattr__(name: str):
+    """Load optional LightGBM wrappers only when explicitly requested."""
+    if name in {"LightGBMClassifier", "LightGBMRegressor"}:
+        from .lightgbm_models import LightGBMClassifier, LightGBMRegressor
+
+        return {
+            "LightGBMClassifier": LightGBMClassifier,
+            "LightGBMRegressor": LightGBMRegressor,
+        }[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

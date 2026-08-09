@@ -2,12 +2,13 @@
 Data ingestion: ticker universe, price download, volume, VADER sentiment.
 Extracted from pipeline_course.py — all caching logic preserved.
 """
+import io
 import os
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from datetime import datetime
-from typing import List, Optional
 
 # ── Default cache directory (same folder as the calling script) ────────────
 _DEFAULT_CACHE = os.path.dirname(os.path.abspath(__file__))
@@ -50,31 +51,119 @@ _SP500_TICKERS = [
 ]
 
 
-def get_tickers(use_wikipedia: bool = True) -> List[str]:
-    """Return the S&P 500 ticker universe. Falls back to hardcoded list."""
+def get_tickers(use_wikipedia: bool = True) -> list[str]:
+    """Return the S&P 500 ticker universe. Falls back to hardcoded list.
+
+    Wikipedia blocks requests that arrive without a browser User-Agent, which
+    returns HTTP 403.  I fetch the page myself with a normal browser header and
+    hand the HTML to pandas, then fall back to a stable CSV of constituents,
+    and only then to the hardcoded list.
+    """
     if use_wikipedia:
-        try:
-            tables  = pd.read_html(
-                "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
-                flavor="lxml")
-            tickers = (tables[0]["Symbol"]
-                       .str.replace(".", "-", regex=False)
-                       .tolist())
+        tickers = _tickers_from_wikipedia()
+        if tickers:
             print(f"Wikipedia: {len(tickers)} tickers.")
             return tickers
-        except Exception as e:
-            print(f"Wikipedia failed ({e}). Using hardcoded list.")
+        tickers = _tickers_from_csv()
+        if tickers:
+            print(f"CSV fallback: {len(tickers)} tickers.")
+            return tickers
+        print("Ticker fetch failed. Using hardcoded list.")
     return _SP500_TICKERS
 
 
+def _tickers_from_wikipedia() -> list[str] | None:
+    """Fetch S&P 500 symbols from Wikipedia using a browser User-Agent."""
+    import urllib.request
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/124.0 Safari/537.36"),
+        "Accept": "text/html,application/xhtml+xml",
+    }
+    try:
+        req  = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+        tables  = pd.read_html(io.StringIO(html), flavor="lxml")
+        tickers = (tables[0]["Symbol"]
+                   .astype(str)
+                   .str.replace(".", "-", regex=False)
+                   .str.strip()
+                   .tolist())
+        return tickers or None
+    except Exception as e:
+        print(f"Wikipedia failed ({e}).")
+        return None
+
+
+def _tickers_from_csv() -> list[str] | None:
+    """Fetch S&P 500 symbols from a stable public CSV of constituents."""
+    import urllib.request
+    url = ("https://raw.githubusercontent.com/datasets/"
+           "s-and-p-500-companies/main/data/constituents.csv")
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            csv_text = resp.read().decode("utf-8", errors="replace")
+        df = pd.read_csv(io.StringIO(csv_text))
+        col = "Symbol" if "Symbol" in df.columns else df.columns[0]
+        tickers = (df[col]
+                   .astype(str)
+                   .str.replace(".", "-", regex=False)
+                   .str.strip()
+                   .tolist())
+        return tickers or None
+    except Exception as e:
+        print(f"CSV source failed ({e}).")
+        return None
+
+
+def _yf_download_field(tickers: list[str], field: str,
+                       start: str, end: str,
+                       batch_size: int = 50) -> pd.DataFrame | None:
+    """Download one OHLCV field for a list of tickers in batches.
+
+    Returns a wide DataFrame indexed by date with one column per ticker, or
+    None when nothing could be downloaded.  Columns that are mostly empty are
+    dropped so a delisted or illiquid name does not pollute the panel.
+    """
+    frames = []
+    batches = [tickers[i:i+batch_size] for i in range(0, len(tickers), batch_size)]
+    for bi, batch in enumerate(batches):
+        try:
+            raw = yf.download(batch, start=start, end=end,
+                              auto_adjust=True, progress=False, threads=True)
+            col = (raw[field] if isinstance(raw.columns, pd.MultiIndex)
+                   else raw)
+            ok  = col.dropna(axis=1, thresh=int(0.7*len(col))).columns.tolist()
+            frames.append(col[ok])
+        except Exception as e:
+            print(f"  batch {bi+1} failed: {e}", flush=True)
+        print(f"  batch {bi+1}/{len(batches)} done", flush=True)
+
+    if not frames:
+        return None
+    out = pd.concat(frames, axis=1)
+    out = out.loc[:, ~out.columns.duplicated()]
+    return out
+
+
 def download_prices(
-    tickers: List[str],
+    tickers: list[str],
     start: str = "2015-01-01",
-    end: Optional[str] = None,
-    cache_dir: Optional[str] = None,
+    end: str | None = None,
+    cache_dir: str | None = None,
     batch_size: int = 50,
 ) -> pd.DataFrame:
-    """Download (or load cached) adjusted close prices."""
+    """Download (or load cached) adjusted close prices.
+
+    When a cache exists but is missing some of the requested tickers, only the
+    missing names are downloaded and merged, so growing the universe from 315
+    to the full index does not force a full refetch of everything.
+    """
     cache_dir = cache_dir or _DEFAULT_CACHE
     end       = end or datetime.today().strftime("%Y-%m-%d")
     cache     = os.path.join(cache_dir, "close_cache_full.parquet")
@@ -82,28 +171,25 @@ def download_prices(
     if os.path.exists(cache):
         print("Loading cached price data ...", flush=True)
         close = pd.read_parquet(cache)
+        missing = [t for t in tickers if t not in close.columns]
+        if missing:
+            print(f"  {close.shape[1]} cached, fetching {len(missing)} new "
+                  f"tickers ...", flush=True)
+            new = _yf_download_field(missing, "Close", start, end, batch_size)
+            if new is not None and new.shape[1] > 0:
+                # Align new tickers to the existing dense date index and merge.
+                new = new.reindex(close.index).ffill()
+                close = close.join(new, how="left")
+                close = close.loc[:, ~close.columns.duplicated()]
+                close.to_parquet(cache)
+                print(f"  Merged: now {close.shape[1]} tickers.", flush=True)
         print(f"  {close.shape[1]} tickers x {close.shape[0]} days.")
         return close
 
     print(f"Downloading {len(tickers)} tickers ...", flush=True)
-    frames = []
-    batches = [tickers[i:i+batch_size] for i in range(0, len(tickers), batch_size)]
-    for bi, batch in enumerate(batches):
-        try:
-            raw = yf.download(batch, start=start, end=end,
-                              auto_adjust=True, progress=False, threads=True)
-            c = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw
-            ok = c.dropna(axis=1, thresh=int(0.7*len(c))).columns.tolist()
-            frames.append(c[ok])
-        except Exception as e:
-            print(f"  batch {bi+1} failed: {e}", flush=True)
-        print(f"  batch {bi+1}/{len(batches)} done", flush=True)
-
-    if not frames:
+    close = _yf_download_field(tickers, "Close", start, end, batch_size)
+    if close is None:
         raise RuntimeError("No price data downloaded.")
-
-    close = pd.concat(frames, axis=1)
-    close = close.loc[:, ~close.columns.duplicated()]
     close = close.dropna(axis=1, thresh=int(0.7*len(close))).ffill().dropna()
     close.to_parquet(cache)
     print(f"  Saved {close.shape[1]} tickers x {close.shape[0]} days.")
@@ -111,12 +197,12 @@ def download_prices(
 
 
 def download_volume(
-    tickers: List[str],
+    tickers: list[str],
     start: str = "2015-01-01",
-    end: Optional[str] = None,
-    cache_dir: Optional[str] = None,
+    end: str | None = None,
+    cache_dir: str | None = None,
     batch_size: int = 50,
-) -> Optional[pd.DataFrame]:
+) -> pd.DataFrame | None:
     """Download (or load cached) daily volume."""
     cache_dir = cache_dir or _DEFAULT_CACHE
     end       = end or datetime.today().strftime("%Y-%m-%d")
@@ -125,29 +211,25 @@ def download_volume(
     if os.path.exists(cache):
         print("Loading cached volume data ...", flush=True)
         vol = pd.read_parquet(cache)
+        missing = [t for t in tickers if t not in vol.columns]
+        if missing:
+            print(f"  {vol.shape[1]} cached, fetching {len(missing)} new "
+                  f"tickers ...", flush=True)
+            new = _yf_download_field(missing, "Volume", start, end, batch_size)
+            if new is not None and new.shape[1] > 0:
+                new = new.reindex(vol.index).ffill().fillna(0)
+                vol = vol.join(new, how="left")
+                vol = vol.loc[:, ~vol.columns.duplicated()]
+                vol.to_parquet(cache)
+                print(f"  Merged: now {vol.shape[1]} tickers.", flush=True)
         print(f"  {vol.shape[1]} tickers x {vol.shape[0]} days.")
         return vol
 
     print(f"Downloading volume for {len(tickers)} tickers ...", flush=True)
-    frames = []
-    batches = [tickers[i:i+batch_size] for i in range(0, len(tickers), batch_size)]
-    for bi, batch in enumerate(batches):
-        try:
-            raw = yf.download(batch, start=start, end=end,
-                              auto_adjust=True, progress=False, threads=True)
-            v = raw["Volume"] if isinstance(raw.columns, pd.MultiIndex) else raw
-            ok = v.dropna(axis=1, thresh=int(0.7*len(v))).columns.tolist()
-            frames.append(v[ok])
-        except Exception as e:
-            print(f"  batch {bi+1} failed: {e}", flush=True)
-        print(f"  batch {bi+1}/{len(batches)} done", flush=True)
-
-    if not frames:
+    vol = _yf_download_field(tickers, "Volume", start, end, batch_size)
+    if vol is None:
         print("No volume data downloaded.")
         return None
-
-    vol = pd.concat(frames, axis=1)
-    vol = vol.loc[:, ~vol.columns.duplicated()]
     vol = vol.dropna(axis=1, thresh=int(0.7*len(vol))).ffill().fillna(0)
     vol.to_parquet(cache)
     print(f"  Saved {vol.shape[1]} tickers x {vol.shape[0]} days.")
@@ -155,9 +237,9 @@ def download_volume(
 
 
 def fetch_sentiment(
-    tickers: List[str],
+    tickers: list[str],
     close_index: pd.Index,
-    cache_dir: Optional[str] = None,
+    cache_dir: str | None = None,
 ) -> pd.DataFrame:
     """Fetch and cache VADER NLP sentiment scores from Yahoo Finance news."""
     from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
@@ -210,3 +292,58 @@ def fetch_sentiment(
             .ffill(limit=3).fillna(0.0))
     sent.to_parquet(cache)
     return sent
+
+
+def filter_universe(
+    close: pd.DataFrame,
+    vol: pd.DataFrame | None = None,
+    drop_delisted: bool = True,
+    stale_window: int = 60,
+    min_dollar_vol: float | None = None,
+) -> pd.DataFrame:
+    """Drop delisted and low liquidity names from the price panel.
+
+    Two filters are applied.
+
+    Delisting shows up in a forward filled panel as a flat price tail, because
+    once a stock stops trading its last value is carried forward and every
+    later return is zero.  I flag a ticker as delisted when the standard
+    deviation of its returns over the last stale_window rows is essentially
+    zero, and drop it.  This also removes survivorship style artifacts where a
+    dead name would otherwise sit in the cross section as a frozen line.
+
+    Market capitalization is not in the panel, but dollar volume, price times
+    shares traded, is a strong proxy for both size and liquidity.  When a
+    threshold is given I compute each ticker's median daily dollar volume over
+    the whole sample and drop the names below it, which removes the small and
+    thinly traded stocks that add noise to the cross sectional ranks.
+
+    Returns the filtered close frame.  The caller reindexes volume and
+    sentiment to the surviving columns.
+    """
+    keep = list(close.columns)
+
+    if drop_delisted:
+        rets = np.log(close / close.shift(1))
+        tail_std = rets.tail(stale_window).std()
+        alive = tail_std[tail_std > 1e-8].index.tolist()
+        dropped = [t for t in keep if t not in alive]
+        keep = [t for t in keep if t in alive]
+        if dropped:
+            print(f"  Universe filter: dropped {len(dropped)} delisted or "
+                  f"flat names.", flush=True)
+
+    if min_dollar_vol is not None and vol is not None:
+        common = [t for t in keep if t in vol.columns]
+        dollar = (close[common] * vol[common].reindex(close.index).fillna(0.0))
+        med = dollar.median()
+        liquid = med[med >= min_dollar_vol].index.tolist()
+        dropped = [t for t in keep if t not in liquid]
+        keep = [t for t in keep if t in liquid]
+        if dropped:
+            print(f"  Universe filter: dropped {len(dropped)} names below "
+                  f"${min_dollar_vol/1e6:.0f}M median daily dollar volume.",
+                  flush=True)
+
+    print(f"  Universe filter: {len(keep)} tickers remain.", flush=True)
+    return close[keep]

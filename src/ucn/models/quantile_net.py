@@ -22,13 +22,13 @@ Runs on the array backend, GPU under CuPy when UCN_GPU is set.
 from __future__ import annotations
 
 import math
-from typing import List, Optional
 
 import numpy as _np
-from ..backend import xp as np, to_device, to_cpu, new_rng
 
+from ..backend import new_rng, to_cpu, to_device
+from ..backend import xp as np
 
-DEFAULT_QUANTILES: List[float] = [0.05, 0.25, 0.50, 0.75, 0.95]
+DEFAULT_QUANTILES: list[float] = [0.05, 0.25, 0.50, 0.75, 0.95]
 
 
 def _softplus(z):
@@ -42,7 +42,7 @@ def _sigmoid(z):
 class QuantileTermStructureNet:
     """Shared trunk with one quantile fan per horizon, trained by pinball loss."""
 
-    def __init__(self, horizons: List[int], quantiles: Optional[List[float]] = None,
+    def __init__(self, horizons: list[int], quantiles: list[float] | None = None,
                  hidden_sizes=(128, 64), lr=1e-3, beta1=0.9, beta2=0.999,
                  lam=1e-4, dropout_rate=0.2, epochs=400, batch_size=2048,
                  patience=40, seed=42, verbose=20):

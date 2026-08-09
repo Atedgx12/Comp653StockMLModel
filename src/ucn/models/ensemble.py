@@ -16,11 +16,12 @@ The combined probability is a convex blend a * P_ucn + (1 - a) * P_ms. The blend
 weight can be fixed or fit on a validation set with fit_weights.
 """
 import os
+
 import numpy as np
 
-from .unified_network import UnifiedCourseNetwork
-from .multiscale import MultiScaleTermStructureNet
 from ..training.metrics import roc_auc
+from .multiscale import MultiScaleTermStructureNet
+from .unified_network import UnifiedCourseNetwork
 
 
 class VolatilityEnsemble:
@@ -92,7 +93,7 @@ class VolatilityEnsemble:
             raise ValueError("no model inputs supplied to the ensemble")
         wts = np.asarray(wts, dtype=float)
         wts = wts / wts.sum()
-        return sum(w * p for w, p in zip(wts, parts))
+        return sum(w * p for w, p in zip(wts, parts, strict=False))
 
     def predict(self, **kw):
         return (self.predict_proba(**kw) >= 0.5).astype(int)

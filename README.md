@@ -1,140 +1,148 @@
-# COMP 653 Stock Direction Prediction
+# COMP 653 Multi-Scale Volatility Term Structure Model
 
-**Course**: COMP 653 Statistical Machine Learning, Summer 2026, Rice University  
-**Author**: Zachary Powell (zp21@rice.edu)  
-**Hardware**: RTX 5080 (zach-ai) via Tailscale SSH
+[![CI](https://github.com/Atedgx12/Comp653StockMLModel/actions/workflows/ci.yml/badge.svg)](https://github.com/Atedgx12/Comp653StockMLModel/actions/workflows/ci.yml)
 
-Cross-sectional equity direction prediction using a unified multi-branch network built entirely from COMP 653 algorithms.
+**Course:** COMP 653 Statistical Machine Learning, Summer 2026, Rice University
 
----
+**Authors:** Zachary Powell (`zp21@rice.edu`) and Josh Levy (`jl500@rice.edu`)
 
-## Results
+This repository predicts cross-sectional realized-volatility rank and return
+quantile bands across six intraday and six daily horizons. The final
+`MultiScaleTermStructureNet` uses one NumPy/CuPy LSTM branch per horizon,
+temporal and cross-branch attention, a shared trunk, and conformal quantile
+calibration. The earlier `stockml` baselines and unified course network remain
+available for comparison.
 
-| Model | Accuracy | AUC |
-|---|---|---|
-| **UnifiedCourseNetwork (LR + NB + MLP + Sent)** | **0.5099** | **0.5163** |
-| LightGBM-GPU (baseline) | 0.5103 | 0.5138 |
+## Reported final-run results
 
-Both models evaluated on a 420-ticker x 2066-day S&P 500 panel. Course model trained on 20 MI-selected cross-sectional rank features.
+These AUC values are the held-out results reported in the final course report.
+CI verifies packaging and model behavior on synthetic data; it does not
+download the historical universe or reproduce a full training run.
 
----
+| Scale | Horizon | Multi-Scale + Attention AUC |
+|---|---:|---:|
+| Intraday | 5m | 0.739 |
+| Intraday | 15m | 0.829 |
+| Intraday | 30m | 0.915 |
+| Intraday | 60m | 0.960 |
+| Intraday | 120m | 0.981 |
+| Intraday | 240m | 0.989 |
+| Daily | 1d | 0.702 |
+| Daily | 5d | 0.856 |
+| Daily | 10d | 0.909 |
+| Daily | 30d | 0.957 |
+| Daily | 90d | 0.979 |
+| Daily | 180d | 0.983 |
 
-## Architecture
-
-```
-Input x  (20 MI-selected cross-sectional rank features)
-      |
-+-----+--------------------------------------------+
-| Branch A  Logistic Regression  (Lec 5-2)         |
-|   Linear(20->2) -> Sigmoid                        |
-+---------------------------------------------------+
-| Branch B  Naive Bayes  (Lec 5-3)                 |
-|   Learnable Gaussian norm -> Linear(20->2)->Sig   |
-+---------------------------------------------------+
-| Branch C  Deep MLP  (Lec 5-5)                    |
-|   Linear(20->128)->ReLU->Dropout(0.4)             |
-|   Linear(128->64)->ReLU->Dropout(0.4)             |
-+---------------------------------------------------+
-| Branch D  VADER Sentiment  (extension)            |
-|   Linear(1->2)->Sigmoid                           |
-+-----+--------------------------------------------+
-      |  MetaDrop(0.2) on concat(a_lr, a_nb, a_mlp, a_sent)
-Meta-layer: Linear(70->2) -> Softmax
-      |
-P(Up), P(Down)
-```
-
-All branches trained jointly end-to-end via backpropagation.  
-Optimizer: **Adam** (Module 6, Lec 6-5) with cosine LR annealing.  
-Best-checkpoint restoration over full 500-epoch schedule.
-
----
-
-## Feature Engineering
-
-32 raw features per ticker, cross-sectionally ranked (percentile) by date:
-
-| Group | Features |
-|---|---|
-| Returns | ret1, ret2, ret3, ret5, ret10, ret20, ret60, ret120, ret252, ret756 |
-| Volatility | vol5, vol10, vol20, vol60, vol120, vol252 |
-| Momentum | mom5, mom10, mom20, mom60, mom120, mom252 |
-| Structural | vol_ratio, ma50_ratio, ma200_ratio, ma50_200_cross, ret_accel |
-| Oscillator | rsi14 |
-| Distance | dist52h, dist52l, dist3yh, dist3yl |
-
-Top features by mutual information (Module 2): `ret252`, `mom252`, `dist3yh`, `dist52h`, `ret756`.
-
----
+The report also gives a mean LightGBM AUC of 0.515 on the daily
+cross-sectional baseline. See [the architecture reference](docs/architecture.md)
+for the model and loss definitions, and [the evaluation notes](docs/evaluation_notes.md)
+for the steps needed before treating the reported values as reproduced
+estimates.
 
 ## Setup
 
+Python 3.11 and 3.12 are supported.
+
 ```bash
-git clone https://github.com/Atedgx12/Comp653StockMLModel
+git clone https://github.com/Atedgx12/Comp653StockMLModel.git
 cd Comp653StockMLModel
-
-# Python 3.11+
-pip install -e .
-
-# Optional: sequence models
-pip install -e ".[torch]"
-
-# Dev tools
-pip install -e ".[dev]"
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+python -m pip install -e ".[dev]"
 ```
 
----
+LightGBM requires an OpenMP runtime. On macOS, install it with
+`brew install libomp` before running the LightGBM baseline. The final
+multi-scale model itself uses NumPy on CPU and does not require LightGBM.
 
-## Running
+For an NVIDIA CUDA 12 GPU, install the optional CuPy backend and request it at
+runtime:
 
 ```bash
-# Full pipeline (run on RTX 5080 via SSH)
+python -m pip install -e ".[gpu]"
+UCN_GPU=1 python scripts/multiscale_run.py --help
+```
+
+If the CUDA runtime cannot be initialized, the backend reports the problem and
+falls back to NumPy.
+
+## Run the final models
+
+Start by checking the available options; these commands do not download data:
+
+```bash
+python scripts/multiscale_run.py --help
+python scripts/intraday_run.py --help
+```
+
+Example CPU runs using the final-report training settings are:
+
+```bash
+mkdir -p artifacts
+
+UCN_OUT=artifacts python scripts/multiscale_run.py \
+  --start 2010-01-01 \
+  --epochs 3000 \
+  --label-pct 0.3 \
+  --additivity-lambda 0.5
+
+UCN_OUT=artifacts python scripts/intraday_run.py \
+  --interval 5m \
+  --period 60d \
+  --epochs 3000 \
+  --label-pct 0.3 \
+  --additivity-lambda 0.5
+```
+
+The runners fetch market data with `yfinance`, cache tabular data under the
+selected output directory, and save `.npz` checkpoints there. Results can vary
+as the live data source, available constituents, and provider retention windows
+change. Set `UCN_GPU=1` in front of either command to use the installed CuPy
+backend.
+
+The retained baseline pipeline can be run with:
+
+```bash
 python scripts/pipeline_course.py
-
-# Deploy from local and run remotely
-scp scripts/pipeline_course.py zach-ai:D:/StockModel/pipeline_course.py
-ssh zach-ai "C:\Users\kizzi\.venv\Scripts\python.exe -u D:\StockModel\pipeline_course.py 2>&1"
-
-# Sync outputs and push to GitHub
-.\sync_from_zach.ps1
 ```
 
----
+## Repository structure
 
-## Project Structure
-
-```
-src/stockml/
-  data/ingestion.py          yfinance bulk download + parquet cache
-  features/technicals.py     32-feature multi-timeframe pyramid
-  features/pipeline.py       cross-sectional rank pipeline
-  features/pruning.py        MI feature selection (Module 2)
-  labels/returns.py          cross-sectional top/bottom 30% label
-  models/neural.py           UnifiedCourseNetwork (pure NumPy)
-  models/lightgbm_models.py  LightGBM GPU baseline
-  splits/walk_forward.py     expanding walk-forward CV
-  training/metrics.py        Wilcoxon AUC, accuracy, IC
+```text
+src/ucn/                    final from-scratch course models
+  backend.py                NumPy/CuPy device selection
+  models/multiscale.py      dual-attention term-structure network
+  data/                     ingestion, features, context, and data store
+src/stockml/                reusable baselines and training utilities
 scripts/
-  pipeline_course.py         main COMP 653 pipeline
-configs/model/
-  unified_course_network.yaml
-outputs/
-  loss_curve_UnifiedCourseNetwork_Adam_Sent.png
-  final_results_unified.csv
-notebooks/
-  03_presentation.ipynb
-sync_from_zach.ps1           one-command sync from RTX 5080 + push
+  multiscale_run.py         daily 1d-to-180d final runner
+  intraday_run.py           intraday 5m-to-240m final runner
+configs/                    baseline data, feature, model, and split configs
+models/                     retained trained checkpoints
+docs/                       architecture, derivations, and evaluation notes
+tests/                      unit, runner-import, and model checkpoint tests
 ```
 
----
+## Development checks
 
-## Course Alignment
+```bash
+ruff check src tests
+mypy src/stockml
+pytest --cov=stockml --cov=ucn --cov-report=term-missing
+```
 
-| Component | Module |
+CI runs lint and type checks once and executes the tests on Python 3.11 and
+3.12. Contributions should keep generated datasets and large local artifacts
+out of Git; see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Course alignment
+
+| Component | Course topic |
 |---|---|
-| Entropy, mutual information, MI feature selection | Module 2 |
-| Logistic Regression branch | Module 5, Lec 5-2 |
-| Naive Bayes normalization branch | Module 5, Lec 5-3 |
-| Deep MLP + backpropagation branch | Module 5, Lec 5-5 |
-| Adam optimizer | Module 6, Lec 6-5 |
-| Cross-sectional evaluation, walk-forward CV | Module 3 |
+| Entropy and mutual-information feature selection | Module 2 |
+| Temporal splitting and cross-sectional evaluation | Module 3 |
+| Logistic regression and Naive Bayes branches | Module 5 |
+| MLP, LSTM, attention, and backpropagation | Module 5 |
+| Adam optimization and regularization | Module 6 |
+| Quantile loss and conformal calibration | Final extension |

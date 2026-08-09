@@ -3,8 +3,9 @@ Logistic Regression from scratch — Module 5, Lec 5-2.
 Gradient descent on binary NLL with L2 regularisation and LR decay.
 """
 import numpy as np
-from ..utils import sigmoid, nll_loss
+
 from ..training.metrics import accuracy
+from ..utils import nll_loss, sigmoid
 
 
 class LogisticRegressionScratch:

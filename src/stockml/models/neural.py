@@ -248,6 +248,8 @@ class UnifiedCourseNetwork(BaseModel):
         X = c["X"]
         N = Y_oh.shape[0]
         K = self._n_classes
+        if K is None:
+            raise RuntimeError("Model weights must be initialized before backpropagation")
         g: dict = {}
 
         d = (c["Y_hat"] - Y_oh) / N
