@@ -1,21 +1,20 @@
-# ruff: noqa: PLR0917
 """
 Feature engineering and cross-sectional label construction.
 Extracted from pipeline_course.py make_features().
 """
-
 import numpy as np
 import pandas as pd
+from typing import Optional, Tuple, List
 
 
 def make_features(
     close: pd.DataFrame,
-    sent_df: pd.DataFrame | None = None,
-    vol_df: pd.DataFrame | None = None,
+    sent_df: Optional[pd.DataFrame] = None,
+    vol_df: Optional[pd.DataFrame] = None,
     top_pct: float = 0.20,
     bottom_pct: float = 0.20,
     min_history: int = 300,
-) -> tuple[pd.DataFrame, pd.Series, list[str], bool]:
+) -> Tuple[pd.DataFrame, pd.Series, List[str], bool]:
     """
     Build the cross-sectional feature matrix and labels.
 
@@ -110,7 +109,7 @@ def make_features(
     has_sent = sent_df is not None
     if has_sent:
         X_ranked["sent_rank"] = sent_raw.groupby(sent_raw.index).rank(pct=True)
-        feat_names_out = [*feat_names, "sent_rank"]
+        feat_names_out = feat_names + ["sent_rank"]
     else:
         feat_names_out = feat_names
 

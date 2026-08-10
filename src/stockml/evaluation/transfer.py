@@ -1,4 +1,3 @@
-# ruff: noqa: PLR0917
 """Transfer learning evaluation: pretrain on equities, fine tune on crypto.
 
 The function exposed here is deliberately simple. It takes an already

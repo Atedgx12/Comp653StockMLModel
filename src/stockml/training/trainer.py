@@ -1,4 +1,3 @@
-# ruff: noqa: PLR0917
 """Walk forward training driver.
 
 The driver materializes folds, calls the model's fit/predict surface on each

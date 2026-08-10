@@ -3,11 +3,11 @@ Data ingestion: ticker universe, price download, volume, VADER sentiment.
 Extracted from pipeline_course.py — all caching logic preserved.
 """
 import os
-from datetime import datetime
-
 import numpy as np
 import pandas as pd
 import yfinance as yf
+from datetime import datetime
+from typing import List, Optional
 
 # ── Default cache directory (same folder as the calling script) ────────────
 _DEFAULT_CACHE = os.path.dirname(os.path.abspath(__file__))
@@ -50,7 +50,7 @@ _SP500_TICKERS = [
 ]
 
 
-def get_tickers(use_wikipedia: bool = True) -> list[str]:
+def get_tickers(use_wikipedia: bool = True) -> List[str]:
     """Return the S&P 500 ticker universe. Falls back to hardcoded list."""
     if use_wikipedia:
         try:
@@ -68,10 +68,10 @@ def get_tickers(use_wikipedia: bool = True) -> list[str]:
 
 
 def download_prices(
-    tickers: list[str],
+    tickers: List[str],
     start: str = "2015-01-01",
-    end: str | None = None,
-    cache_dir: str | None = None,
+    end: Optional[str] = None,
+    cache_dir: Optional[str] = None,
     batch_size: int = 50,
 ) -> pd.DataFrame:
     """Download (or load cached) adjusted close prices."""
@@ -111,12 +111,12 @@ def download_prices(
 
 
 def download_volume(
-    tickers: list[str],
+    tickers: List[str],
     start: str = "2015-01-01",
-    end: str | None = None,
-    cache_dir: str | None = None,
+    end: Optional[str] = None,
+    cache_dir: Optional[str] = None,
     batch_size: int = 50,
-) -> pd.DataFrame | None:
+) -> Optional[pd.DataFrame]:
     """Download (or load cached) daily volume."""
     cache_dir = cache_dir or _DEFAULT_CACHE
     end       = end or datetime.today().strftime("%Y-%m-%d")
@@ -155,9 +155,9 @@ def download_volume(
 
 
 def fetch_sentiment(
-    tickers: list[str],
+    tickers: List[str],
     close_index: pd.Index,
-    cache_dir: str | None = None,
+    cache_dir: Optional[str] = None,
 ) -> pd.DataFrame:
     """Fetch and cache VADER NLP sentiment scores from Yahoo Finance news."""
     from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer

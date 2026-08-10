@@ -1,12 +1,10 @@
-# ruff: noqa: PLR0917
 """
 MLP from scratch — Module 5, Lec 5-5.
 Two or more hidden ReLU layers, softmax output, mini-batch backprop.
 """
 import numpy as np
-
+from ..utils import softmax, cross_entropy_softmax
 from ..training.metrics import accuracy
-from ..utils import cross_entropy_softmax, softmax
 
 
 class MLPScratch:
@@ -26,7 +24,7 @@ class MLPScratch:
 
     def _init_weights(self, d_in: int, d_out: int):
         rng   = np.random.default_rng(self.seed)
-        sizes = [d_in, *list(self.hidden_sizes), d_out]
+        sizes = [d_in] + list(self.hidden_sizes) + [d_out]
         for i in range(len(sizes) - 1):
             s = np.sqrt(2.0 / sizes[i])
             self.params[f"W{i+1}"] = rng.standard_normal((sizes[i], sizes[i+1])) * s
@@ -77,16 +75,14 @@ class MLPScratch:
         idx = np.arange(len(X))
         for epoch in range(self.epochs):
             rng.shuffle(idx)
-            ep_loss = 0.0
-            n_b = 0
+            ep_loss = 0.0; n_b = 0
             for s in range(0, len(X), self.batch_size):
                 b    = idx[s:s + self.batch_size]
                 Y_oh = np.eye(K)[y[b].astype(int)]
                 c    = self._forward(X[b])
                 loss = cross_entropy_softmax(c[f"A{len(self.hidden_sizes)+1}"], Y_oh)
                 self._update(self._backward(c, Y_oh), lr)
-                ep_loss += loss
-                n_b += 1
+                ep_loss += loss; n_b += 1
             self.loss_history.append(ep_loss / n_b)
             lr *= self.decay
             if self.verbose and (epoch + 1) % self.verbose == 0:

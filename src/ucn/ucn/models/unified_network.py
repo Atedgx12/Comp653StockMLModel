@@ -1,4 +1,3 @@
-# ruff: noqa: PLR0912
 """
 UnifiedCourseNetwork — modular, fine-tunable version.
 
@@ -13,14 +12,12 @@ Key additions over the monolithic pipeline_course.py version:
         ucn.fit(X_new, y_new)                    # only update MLP + meta
 """
 import math
-
 import numpy as _np
-
-from ..backend import new_rng, to_cpu, to_device
-from ..backend import xp as np
+from typing import Optional
+from ..backend import xp as np, to_device, to_cpu, new_rng
 from ..config import UCNConfig
+from ..utils import sigmoid, softmax, cross_entropy_softmax
 from ..training.metrics import accuracy
-from ..utils import cross_entropy_softmax, sigmoid, softmax
 
 
 class UnifiedCourseNetwork:
@@ -36,7 +33,7 @@ class UnifiedCourseNetwork:
     Gaussian noise augmentation, and PGD adversarial training (Module 8).
     """
 
-    def __init__(self, cfg: UCNConfig | None = None):
+    def __init__(self, cfg: Optional[UCNConfig] = None):
         self.cfg    = cfg or UCNConfig()
         self.params = {}
         self.m      = {}
@@ -161,8 +158,7 @@ class UnifiedCourseNetwork:
         c.update({'sig': sig, 'X_n': X_n, 'z_nb': z_nb, 'a_nb': a_nb})
 
         # Branch C
-        A = X_price
-        mlp = {'A0': X_price}
+        A = X_price; mlp = {'A0': X_price}
         p = cfg.dropout_rate
         for i in range(len(cfg.hidden_sizes)):
             Z = A @ self.params[f'Wm{i+1}'] + self.params[f'bm{i+1}']
@@ -171,8 +167,7 @@ class UnifiedCourseNetwork:
                 mask = (self._rng.random(A.shape) >= p).astype(float) / (1.0 - p)
                 A = A * mask
                 mlp[f'drop{i+1}'] = mask
-            mlp[f'Z{i+1}'] = Z
-            mlp[f'A{i+1}'] = A
+            mlp[f'Z{i+1}'] = Z; mlp[f'A{i+1}'] = A
         c['mlp'] = mlp
 
         # Branch D
@@ -225,9 +220,7 @@ class UnifiedCourseNetwork:
     def _backward(self, c: dict, Y_oh: _np.ndarray,
                   sample_weights: _np.ndarray = None):
         cfg = self.cfg
-        X   = c['X']
-        N = Y_oh.shape[0]
-        K = self.n_classes
+        X   = c['X']; N = Y_oh.shape[0]; K = self.n_classes
         g   = {}
 
         # Softmax + CE gradient: (Y_hat - Y_oh) / N
@@ -271,10 +264,8 @@ class UnifiedCourseNetwork:
         # Branch E: LSTM BPTT
         if cfg.use_lstm and 'lstm_h' in c:
             H_l    = cfg.lstm_hidden
-            lstm_h = c['lstm_h']
-            lstm_c = c['lstm_c']
-            lstm_g = c['lstm_g']
-            seqs   = c['seqs']
+            lstm_h = c['lstm_h']; lstm_c = c['lstm_c']
+            lstm_g = c['lstm_g']; seqs   = c['seqs']
             T      = seqs.shape[1]
             # gradient from meta-layer: last columns after sent
             sent_k = K if cfg.use_sent else 0
@@ -319,8 +310,7 @@ class UnifiedCourseNetwork:
             g['lstm_b'] = db_l
 
         # Branch C
-        dm = d_mlp
-        mlp = c['mlp']
+        dm = d_mlp; mlp = c['mlp']
         for i in range(len(cfg.hidden_sizes), 0, -1):
             if f'drop{i}' in mlp:
                 dm = dm * mlp[f'drop{i}']
@@ -394,19 +384,16 @@ class UnifiedCourseNetwork:
         cfg = self.cfg
         # Move all inputs onto the compute device once, so every matmul below
         # runs on the GPU when the CuPy backend is active.
-        X = to_device(X)
-        y = to_device(y)
+        X = to_device(X); y = to_device(y)
         seqs = to_device(seqs)
         sample_weights = to_device(sample_weights)
-        K   = len(np.unique(y))
+        K   = int(len(np.unique(y)))
         if not self.params:
             self._init_weights(X.shape[1], K)
 
         n_val  = max(int(len(X) * cfg.val_frac), 1)
-        X_tr   = X[:len(X)-n_val]
-        y_tr = y[:len(y)-n_val]
-        X_val  = X[len(X)-n_val:]
-        y_val = y[len(y)-n_val:]
+        X_tr   = X[:len(X)-n_val];  y_tr = y[:len(y)-n_val]
+        X_val  = X[len(X)-n_val:];  y_val = y[len(y)-n_val:]
         # Slice sample weights to match training split
         w_tr = (sample_weights[:len(X)-n_val]
                 if sample_weights is not None else None)
@@ -437,8 +424,7 @@ class UnifiedCourseNetwork:
                 lr_t = cfg.lr * (0.01 + 0.99 * 0.5 * (1.0 + np.cos(np.pi * ce / ct)))
 
             self._idx_rng.shuffle(idx_tr)
-            ep_loss = 0.0
-            n_b = 0
+            ep_loss = 0.0; n_b = 0
 
             for s in range(0, len(X_tr), cfg.batch_size):
                 b    = to_device(idx_tr[s:s + cfg.batch_size])
@@ -471,8 +457,7 @@ class UnifiedCourseNetwork:
                 loss = cross_entropy_softmax(
                     self._forward(X_b, training=False, seqs=s_b)['Y_hat'], Y_oh)
                 self._update(g, lr_t)
-                ep_loss += float(loss)
-                n_b += 1
+                ep_loss += float(loss); n_b += 1
 
             self.loss_history.append(ep_loss / n_b)
 
@@ -570,7 +555,7 @@ class UnifiedCourseNetwork:
 
     @classmethod
     def from_checkpoint(cls, path: str,
-                        cfg: UCNConfig | None = None) -> "UnifiedCourseNetwork":
+                        cfg: Optional[UCNConfig] = None) -> "UnifiedCourseNetwork":
         """Instantiate a model from a saved checkpoint (for fine-tuning)."""
         model = cls(cfg)
         model.load_checkpoint(path)

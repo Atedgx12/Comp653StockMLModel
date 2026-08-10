@@ -1,4 +1,3 @@
-# ruff: noqa: PLR0917
 """
 Hierarchical market context features.
 
@@ -40,19 +39,20 @@ from __future__ import annotations
 
 import json
 import os
-
 import numpy as np
 import pandas as pd
+from typing import Dict, List, Optional
+
 
 # Horizons used for every context comparison, in trading days.
-CONTEXT_HORIZONS: list[int] = [5, 20, 60, 120, 252]
+CONTEXT_HORIZONS: List[int] = [5, 20, 60, 120, 252]
 
 # Horizons used for the macro volatility and trend descriptors.
-MACRO_HORIZONS: list[int] = [20, 60, 120, 252]
+MACRO_HORIZONS: List[int] = [20, 60, 120, 252]
 
 
 def build_equal_weight_index(close: pd.DataFrame,
-                             members: list[str] | None = None) -> pd.Series:
+                             members: Optional[List[str]] = None) -> pd.Series:
     """
     Build an equal weighted price index from a set of member tickers.
 
@@ -75,7 +75,7 @@ def build_equal_weight_index(close: pd.DataFrame,
 
 
 def build_sector_indices(close: pd.DataFrame,
-                         sector_map: dict[str, str] | None) -> dict[str, pd.Series]:
+                         sector_map: Optional[Dict[str, str]]) -> Dict[str, pd.Series]:
     """
     Build one equal weighted index per sector.
 
@@ -86,7 +86,7 @@ def build_sector_indices(close: pd.DataFrame,
     if not sector_map:
         return {"MARKET": build_equal_weight_index(close)}
 
-    groups: dict[str, list[str]] = {}
+    groups: Dict[str, List[str]] = {}
     for ticker in close.columns:
         sector = sector_map.get(ticker, "MARKET")
         groups.setdefault(sector, []).append(ticker)
@@ -156,15 +156,15 @@ def add_hierarchical_context(
     return feat
 
 
-def macro_feature_names(feat_names: list[str]) -> list[str]:
+def macro_feature_names(feat_names: List[str]) -> List[str]:
     """Return the subset of feature names that describe the macro regime."""
     return [f for f in feat_names if f.startswith("macro_")]
 
 
 def load_or_build_sector_map(
-    tickers: list[str],
+    tickers: List[str],
     cache_path: str = "D:/StockModel/sector_map.json",
-) -> dict[str, str] | None:
+) -> Optional[Dict[str, str]]:
     """
     Load a ticker to sector map, building it from yfinance on first use.
 
@@ -176,7 +176,7 @@ def load_or_build_sector_map(
     """
     if os.path.exists(cache_path):
         try:
-            with open(cache_path, encoding="utf-8") as f:
+            with open(cache_path, "r", encoding="utf-8") as f:
                 cached = json.load(f)
             if all(t in cached for t in tickers):
                 return {t: cached.get(t, "MARKET") for t in tickers}
@@ -188,7 +188,7 @@ def load_or_build_sector_map(
     except Exception:
         return None
 
-    sector_map: dict[str, str] = {}
+    sector_map: Dict[str, str] = {}
     for i, t in enumerate(tickers):
         sector = "MARKET"
         try:
@@ -211,12 +211,12 @@ def load_or_build_sector_map(
 
 def build_correlation_clusters(
     close: pd.DataFrame,
-    n_clusters: int | None = None,
-    insample_end: str | None = None,
+    n_clusters: Optional[int] = None,
+    insample_end: Optional[str] = None,
     k_range: tuple = (8, 20),
     min_obs: int = 250,
     market_neutral: bool = True,
-) -> dict[str, str]:
+) -> Dict[str, str]:
     """
     Group tickers into data driven sectors by clustering return co movement.
 
@@ -269,7 +269,7 @@ def build_correlation_clusters(
 
     labels = _cluster_distance_matrix(dist, n_clusters, k_range)
 
-    cluster_map = {t: f"CL{int(lab):02d}" for t, lab in zip(valid, labels, strict=False)}
+    cluster_map = {t: f"CL{int(lab):02d}" for t, lab in zip(valid, labels)}
     for t in dropped:
         cluster_map[t] = "MARKET"
 

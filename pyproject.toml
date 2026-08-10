@@ -9,10 +9,7 @@ description = "Generalized cross-asset prediction model for COMP 653 Statistical
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [
-    { name = "Zachary Powell", email = "zp21@rice.edu" },
-    { name = "Josh Levy", email = "jl500@rice.edu" },
-]
+authors = [{ name = "Zachary Powell", email = "zp21@rice.edu" }]
 
 dependencies = [
     "numpy>=1.26",

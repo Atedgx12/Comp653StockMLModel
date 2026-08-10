@@ -1,4 +1,3 @@
-# ruff: noqa: PLR0917
 """
 Quantile term structure network: predict price ranges, not point prices.
 
@@ -23,13 +22,13 @@ Runs on the array backend, GPU under CuPy when UCN_GPU is set.
 from __future__ import annotations
 
 import math
+from typing import List, Optional
 
 import numpy as _np
+from ..backend import xp as np, to_device, to_cpu, new_rng
 
-from ..backend import new_rng, to_cpu, to_device
-from ..backend import xp as np
 
-DEFAULT_QUANTILES: list[float] = [0.05, 0.25, 0.50, 0.75, 0.95]
+DEFAULT_QUANTILES: List[float] = [0.05, 0.25, 0.50, 0.75, 0.95]
 
 
 def _softplus(z):
@@ -43,7 +42,7 @@ def _sigmoid(z):
 class QuantileTermStructureNet:
     """Shared trunk with one quantile fan per horizon, trained by pinball loss."""
 
-    def __init__(self, horizons: list[int], quantiles: list[float] | None = None,
+    def __init__(self, horizons: List[int], quantiles: Optional[List[float]] = None,
                  hidden_sizes=(128, 64), lr=1e-3, beta1=0.9, beta2=0.999,
                  lam=1e-4, dropout_rate=0.2, epochs=400, batch_size=2048,
                  patience=40, seed=42, verbose=20):
@@ -52,20 +51,12 @@ class QuantileTermStructureNet:
         self.quantiles = quantiles or DEFAULT_QUANTILES
         self.Q = len(self.quantiles)
         self.hidden_sizes = hidden_sizes
-        self.lr = lr
-        self.beta1 = beta1
-        self.beta2 = beta2
-        self.lam = lam
+        self.lr = lr; self.beta1 = beta1; self.beta2 = beta2; self.lam = lam
         self.dropout_rate = dropout_rate
-        self.epochs = epochs
-        self.batch_size = batch_size
-        self.patience = patience
-        self.seed = seed
-        self.verbose = verbose
+        self.epochs = epochs; self.batch_size = batch_size
+        self.patience = patience; self.seed = seed; self.verbose = verbose
         self.params: dict = {}
-        self.m: dict = {}
-        self.v: dict = {}
-        self.t = 0
+        self.m: dict = {}; self.v: dict = {}; self.t = 0
         self._rng = new_rng(seed)
         self._idx_rng = _np.random.default_rng(seed)
         self._tau = _np.asarray(self.quantiles).reshape(1, 1, self.Q)
@@ -96,8 +87,7 @@ class QuantileTermStructureNet:
                 mask = (self._rng.random(A.shape) >= p).astype(A.dtype) / (1.0 - p)
                 A = A * mask
                 c[f"drop{i+1}"] = mask
-            c[f"Z{i+1}"] = Z
-            c[f"A{i+1}"] = A
+            c[f"Z{i+1}"] = Z; c[f"A{i+1}"] = A
         raw = A @ self.params["W_head"] + self.params["b_head"]
         N = raw.shape[0]
         raw3 = raw.reshape(N, self.H, self.Q)
@@ -106,9 +96,7 @@ class QuantileTermStructureNet:
         sp = _softplus(raw3[:, :, 1:])
         cum = np.cumsum(sp, axis=2)
         q = np.concatenate([q0, q0 + cum], axis=2)
-        c["trunk"] = A
-        c["raw3"] = raw3
-        c["q"] = q
+        c["trunk"] = A; c["raw3"] = raw3; c["q"] = q
         return c
 
     def _backward(self, c, Y):
@@ -163,38 +151,30 @@ class QuantileTermStructureNet:
         return float(to_cpu(np.maximum(tau * diff, (tau - 1) * diff).mean()))
 
     def fit(self, X, Y):
-        X = to_device(X)
-        Y = to_device(Y)
+        X = to_device(X); Y = to_device(Y)
         if not self.params:
             self._init_weights(X.shape[1])
         n_val = max(int(len(X) * 0.15), 1)
         X_tr, Y_tr = X[:len(X)-n_val], Y[:len(Y)-n_val]
         X_val, Y_val = X[len(X)-n_val:], Y[len(Y)-n_val:]
         idx = _np.arange(len(X_tr))
-        best = 1e18
-        best_p = None
-        bad = 0
+        best = 1e18; best_p = None; bad = 0
         for epoch in range(self.epochs):
             self._idx_rng.shuffle(idx)
-            ep = 0.0
-            n_b = 0
+            ep = 0.0; n_b = 0
             for s in range(0, len(X_tr), self.batch_size):
                 b = to_device(idx[s:s + self.batch_size])
                 c = self._forward(X_tr[b], training=True)
                 g = self._backward(c, Y_tr[b])
                 self._update(g, self.lr)
-                ep += self._pinball(c["q"], Y_tr[b])
-                n_b += 1
+                ep += self._pinball(c["q"], Y_tr[b]); n_b += 1
             cval = self._forward(X_val, training=False)
             vloss = self._pinball(cval["q"], Y_val)
             # Coverage of the outer band on validation.
-            qv = to_cpu(cval["q"])
-            Yv = to_cpu(Y_val)
+            qv = to_cpu(cval["q"]); Yv = to_cpu(Y_val)
             cover = float(((Yv >= qv[:, :, 0]) & (Yv <= qv[:, :, -1])).mean())
             if vloss < best - 1e-7:
-                best = vloss
-                best_p = {k: v.copy() for k, v in self.params.items()}
-                bad = 0
+                best = vloss; best_p = {k: v.copy() for k, v in self.params.items()}; bad = 0
             else:
                 bad += 1
             if self.verbose and (epoch + 1) % self.verbose == 0:

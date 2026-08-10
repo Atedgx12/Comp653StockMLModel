@@ -1,4 +1,3 @@
-# ruff: noqa: PLR0917
 """
 Branch-level fine-tuning tests for UnifiedCourseNetwork.
 
@@ -14,16 +13,12 @@ Run:
   or:
     python branch_tests.py
 """
-import os
-import sys
-
+import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
-import tempfile
-
+import copy, tempfile
 import numpy as np
-
-from ucn import UCNConfig, UnifiedCourseNetwork
+from ucn import UnifiedCourseNetwork, UCNConfig
 from ucn.training.metrics import accuracy, roc_auc
 
 RNG  = np.random.default_rng(42)
@@ -89,7 +84,7 @@ def run_test(branch_name: str, X_train, y_train, X_test, y_test,
     acc_after = accuracy(y_test, ucn.predict(X_test))
 
     changed   = weights_changed(w_before, w_after)
-    weights_unchanged(w_before, w_after)
+    unchanged = weights_unchanged(w_before, w_after)
 
     # Classify each changed param by branch
     changed_branches = set()
@@ -115,7 +110,7 @@ def run_test(branch_name: str, X_train, y_train, X_test, y_test,
 def test_checkpoint_roundtrip(ucn: UnifiedCourseNetwork, tmpdir: str) -> bool:
     """Test that save -> load -> predict gives identical results."""
     path = os.path.join(tmpdir, "roundtrip.npz")
-    X, _y = make_dataset(200)
+    X, y = make_dataset(200)
     pred_before = ucn.predict(X)
     ucn.save_checkpoint(path)
 

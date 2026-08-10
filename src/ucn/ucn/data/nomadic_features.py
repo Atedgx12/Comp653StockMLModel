@@ -1,4 +1,3 @@
-# ruff: noqa: PLR0917
 """
 Extended technical indicators drawn from NomadicStockBot methodology.
 All implemented in pure NumPy / pandas — no TA-Lib dependency.
@@ -19,9 +18,9 @@ from ucn.data.nomadic_features import add_nomadic_features
 feat = add_nomadic_features(c, feat)
 """
 from __future__ import annotations
-
 import numpy as np
 import pandas as pd
+
 
 # ── Oscillators ──────────────────────────────────────────────────────────────
 
@@ -113,8 +112,7 @@ def adx_di(high: pd.Series, low: pd.Series, close: pd.Series,
     tr  = pd.concat([high - low,
                      (high - close.shift(1)).abs(),
                      (low  - close.shift(1)).abs()], axis=1).max(axis=1)
-    up  = high.diff()
-    down = -low.diff()
+    up  = high.diff();  down = -low.diff()
     plus_dm  = up.where((up > down) & (up > 0),  0.0)
     minus_dm = down.where((down > up) & (down > 0), 0.0)
 

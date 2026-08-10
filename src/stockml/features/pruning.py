@@ -1,4 +1,3 @@
-# ruff: noqa: PLR0917
 """Feature pruning: correlation-based and mutual-information-based selection."""
 from __future__ import annotations
 
