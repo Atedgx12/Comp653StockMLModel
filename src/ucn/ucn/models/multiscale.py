@@ -785,7 +785,7 @@ class MultiScaleTermStructureNet:
         """Reconstruct a trained network from a .npz checkpoint."""
         if not str(path).endswith(".npz"):
             path = str(path) + ".npz"
-        d = _np.load(path, allow_pickle=True)
+        d = _np.load(path, allow_pickle=False)
         net = cls(windows=d["meta::windows"].tolist(),
                   hidden=int(d["meta::hidden"]),
                   trunk_sizes=tuple(d["meta::trunk_sizes"].tolist()),
@@ -816,7 +816,7 @@ class MultiScaleTermStructureNet:
             path = str(path) + ".npz"
         if not self.params:
             self._init_weights(d)
-        src = _np.load(path, allow_pickle=True)
+        src = _np.load(path, allow_pickle=False)
         copied, reinit = [], []
         for k in list(self.params.keys()):
             dk = f"param::{k}"

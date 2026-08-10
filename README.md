@@ -1,7 +1,7 @@
 # COMP 653 Stock Direction Prediction
 
 **Course**: COMP 653 Statistical Machine Learning, Summer 2026, Rice University  
-**Author**: Zachary Powell (zp21@rice.edu)  
+**Authors**: Zachary Powell (zp21@rice.edu) and Josh Levy (jl500@rice.edu)  
 **Hardware**: RTX 5080 (zach-ai) via Tailscale SSH
 
 Cross-sectional equity direction prediction using a unified multi-branch network built entirely from COMP 653 algorithms.
